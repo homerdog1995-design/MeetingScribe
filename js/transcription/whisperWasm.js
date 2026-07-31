@@ -62,6 +62,7 @@ export class WhisperWasmProvider extends TranscriptionProvider {
     this._worker = new Worker(new URL('./whisperWasmWorker.js', import.meta.url), { type: 'module' });
     this._worker.onmessage = (event) => this._handleWorkerMessage(event.data);
     this._worker.onerror = (event) => {
+      logger.error('whisperWasm', 'Worker-level crash', { message: event.message });
       this.dispatchEvent(new CustomEvent('error', { detail: { message: event.message || 'Whisper WASM worker crashed', fatal: true } }));
     };
     // The model should already be cached from Settings by the time
@@ -96,6 +97,7 @@ export class WhisperWasmProvider extends TranscriptionProvider {
         }));
       }
     } catch (error) {
+      logger.error('whisperWasm', 'Chunk transcription failed', { message: error.message });
       this.dispatchEvent(new CustomEvent('error', { detail: { message: `Skipped one chunk after an engine error: ${error.message}`, fatal: false } }));
       // The engine's internal state can't be trusted after any failure here
       // (see file header) — replace the whole worker so the *next* chunk
@@ -103,6 +105,7 @@ export class WhisperWasmProvider extends TranscriptionProvider {
       try {
         await this._spawnWorker();
       } catch (reloadError) {
+        logger.error('whisperWasm', 'Worker recovery failed', { message: reloadError.message });
         this.dispatchEvent(new CustomEvent('error', { detail: { message: `Could not recover Whisper WASM: ${reloadError.message}`, fatal: true } }));
       }
     }

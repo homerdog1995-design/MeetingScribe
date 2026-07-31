@@ -64,9 +64,19 @@ async function handleLoad({ modelId, requestId }) {
 async function handleTranscribe({ samples, language }) {
   if (!whisperService) throw new Error('Whisper model is not loaded.');
   const floatSamples = samples instanceof Float32Array ? samples : new Float32Array(samples);
+  // Real multi-threaded WASM needs SharedArrayBuffer, which needs
+  // Cross-Origin-Opener-Policy/Cross-Origin-Embedder-Policy response
+  // headers — GitHub Pages has no way to set custom headers for a static
+  // site, so SharedArrayBuffer is unavailable here. Requesting more than 1
+  // thread on a build that expects real pthread support in that situation
+  // is a very plausible cause of a hard abort on essentially any input,
+  // not just unusually short chunks.
+  if (typeof SharedArrayBuffer === 'undefined') {
+    self.postMessage({ type: 'diagnostic', message: 'SharedArrayBuffer unavailable — forcing single-threaded transcription.' });
+  }
   const { segments } = await whisperService.transcribe(floatSamples, undefined, {
     language: language || 'en',
-    threads: 4,
+    threads: 1,
     translate: false,
   });
   return segments.map((s) => ({ text: s.text.trim(), startMs: Math.round(s.timeStart), endMs: Math.round(s.timeEnd) }));

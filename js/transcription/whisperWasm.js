@@ -2,6 +2,7 @@
 
 import { TranscriptionProvider } from './providerBase.js';
 import { settingsStore } from '../settingsStore.js';
+import { logger } from '../logger.js';
 
 /**
  * Runs whisper.cpp entirely in the browser, on-device, via a vendored
@@ -123,6 +124,7 @@ export class WhisperWasmProvider extends TranscriptionProvider {
   }
 
   _handleWorkerMessage(data) {
+    if (data.type === 'diagnostic') { logger.info('whisperWasm', data.message); return; }
     const pending = this._pending.get(data.requestId);
     if (!pending) return;
     if (data.type === 'progress') return; // only relevant to Settings' download flow, not live transcription

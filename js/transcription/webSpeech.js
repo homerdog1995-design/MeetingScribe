@@ -2,8 +2,10 @@
 
 import { TranscriptionProvider } from './providerBase.js';
 import { settingsStore } from '../settingsStore.js';
+import { logger } from '../logger.js';
 
 const SpeechRecognitionImpl = window.SpeechRecognition || window.webkitSpeechRecognition;
+const STALL_WATCHDOG_MS = 7000;
 
 /**
  * Priority #4, last-resort provider. UNLIKE the other three providers, this
@@ -52,15 +54,30 @@ export class WebSpeechProvider extends TranscriptionProvider {
 
     const recognition = new SpeechRecognitionImpl();
     recognition.continuous = true;
-    recognition.interimResults = false;
+    // interimResults is now on purely for diagnostics: onresult below still
+    // only ever turns *final* results into segments, but seeing an interim
+    // result tells us the recognizer is actually hearing something, which
+    // is exactly the distinction needed when nothing is coming through at
+    // all — "hears nothing" and "hears speech but never finalizes it" look
+    // identical from the outside otherwise.
+    recognition.interimResults = true;
     recognition.lang = this._language;
 
+    this._clearStallWatchdog();
+    this._armStallWatchdog();
+
     recognition.onresult = (event) => {
+      this._clearStallWatchdog();
+      this._armStallWatchdog();
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const result = event.results[i];
-        if (!result.isFinal) continue;
+        if (!result.isFinal) {
+          logger.info('webSpeech', 'Interim result (not yet committed)', { transcript: result[0].transcript });
+          continue;
+        }
         const text = result[0].transcript.trim();
         if (!text) continue;
+        logger.info('webSpeech', 'Final result committed as a segment', { text });
         const nowMs = performance.now() - this._sessionStartPerfMs;
         this.dispatchEvent(new CustomEvent('segment', {
           detail: { text, startMs: nowMs, endMs: nowMs, speakerTurn: false, confidence: result[0].confidence ?? null },
@@ -68,7 +85,12 @@ export class WebSpeechProvider extends TranscriptionProvider {
       }
     };
 
+    recognition.onspeechstart = () => logger.info('webSpeech', 'Speech detected by the recognizer');
+    recognition.onaudiostart = () => logger.info('webSpeech', 'Audio capture started for this recognition session');
+    recognition.onnomatch = () => logger.warn('webSpeech', 'Speech was detected but could not be recognized (onnomatch)');
+
     recognition.onerror = (event) => {
+      logger.error('webSpeech', 'Recognition error', { error: event.error });
       const fatal = event.error === 'not-allowed' || event.error === 'service-not-allowed';
       this.dispatchEvent(new CustomEvent('error', { detail: { message: `Web Speech API error: ${event.error}`, fatal } }));
     };
@@ -77,6 +99,7 @@ export class WebSpeechProvider extends TranscriptionProvider {
     // silence or a time limit; restart transparently so live transcription
     // continues for as long as the meeting is being recorded.
     recognition.onend = () => {
+      logger.info('webSpeech', 'Recognition session ended; restarting if still recording');
       if (!this._stopped) this._launchRecognition();
     };
 
@@ -89,9 +112,29 @@ export class WebSpeechProvider extends TranscriptionProvider {
       // previous one's onend — without this catch, that exception was
       // unhandled and silently ended the whole restart loop with no
       // visible error at all, which is indistinguishable from "broken."
+      logger.error('webSpeech', 'recognition.start() threw synchronously', { message: error.message });
       this.dispatchEvent(new CustomEvent('error', { detail: { message: `Web Speech API failed to (re)start: ${error.message}`, fatal: false } }));
       if (!this._stopped) setTimeout(() => this._launchRecognition(), 300);
     }
+  }
+
+  /** If literally nothing happens (no result, no error, no speech detected) for several seconds, that's silent to the user otherwise — surface it explicitly instead of leaving an unexplained empty transcript. */
+  _armStallWatchdog() {
+    this._stallTimer = setTimeout(() => {
+      if (this._stopped) return;
+      logger.warn('webSpeech', `No recognition activity at all for ${STALL_WATCHDOG_MS}ms`);
+      this.dispatchEvent(new CustomEvent('error', {
+        detail: {
+          message: 'Web Speech API has produced no results for several seconds. Check Settings → View diagnostics log for details, or try Whisper WASM instead.',
+          fatal: false,
+        },
+      }));
+    }, STALL_WATCHDOG_MS);
+  }
+
+  _clearStallWatchdog() {
+    if (this._stallTimer) clearTimeout(this._stallTimer);
+    this._stallTimer = null;
   }
 
   // eslint-disable-next-line class-methods-use-this
@@ -103,6 +146,7 @@ export class WebSpeechProvider extends TranscriptionProvider {
 
   async stop() {
     this._stopped = true;
+    this._clearStallWatchdog();
     this._recognition?.stop();
     this._recognition = null;
   }

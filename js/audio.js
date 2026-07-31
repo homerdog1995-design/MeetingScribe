@@ -65,13 +65,20 @@ export class AudioEngine extends EventTarget {
     }
 
     const destination = this.audioContext.createMediaStreamDestination();
+    // destination (MediaStreamAudioDestinationNode) has ZERO outputs by
+    // design — it's a terminal sink whose .stream is read, never something
+    // you connect FROM. A separate mix bus (a plain GainNode, which does
+    // have outputs) is what both the recorder and the chunker actually tap.
+    const mixBus = this.audioContext.createGain();
+    mixBus.gain.value = 1;
+    mixBus.connect(destination);
 
     if (this.micStream) {
       const micSource = this.audioContext.createMediaStreamSource(this.micStream);
       this._micAnalyser = this.audioContext.createAnalyser();
       this._micAnalyser.fftSize = ANALYSER_FFT_SIZE;
       micSource.connect(this._micAnalyser);
-      micSource.connect(destination);
+      micSource.connect(mixBus);
     }
 
     if (this.systemStream) {
@@ -79,7 +86,7 @@ export class AudioEngine extends EventTarget {
       this._systemAnalyser = this.audioContext.createAnalyser();
       this._systemAnalyser.fftSize = ANALYSER_FFT_SIZE;
       systemSource.connect(this._systemAnalyser);
-      systemSource.connect(destination);
+      systemSource.connect(mixBus);
     }
 
     this.mixedDestinationStream = destination.stream;
@@ -87,7 +94,7 @@ export class AudioEngine extends EventTarget {
     this._chunkerStartMs = 0;
 
     this._startLevelMetering();
-    this._startChunker(destination);
+    this._startChunker(mixBus);
     this._startMediaRecorder(this.mixedDestinationStream, audioBitsPerSecond);
 
     return { sampleRate: this.audioContext.sampleRate };
@@ -190,15 +197,16 @@ export class AudioEngine extends EventTarget {
    * reached (so continuous uninterrupted speech still gets transcribed
    * incrementally rather than only at the very end of the meeting).
    */
-  _startChunker(destinationNode) {
+  _startChunker(mixBus) {
     this._chunkerNode = this.audioContext.createScriptProcessor(CHUNKER_BUFFER_SIZE, 1, 1);
     const monoTap = this.audioContext.createGain();
-    destinationNode.connect(monoTap);
-    monoTap.connect(this._chunkerNode);
-    this._chunkerNode.connect(this.audioContext.destination === null ? monoTap : monoTap); // tap only, no audible output
-
-    // Route through a zero-gain node so the tap never causes audible echo.
     monoTap.gain.value = 1;
+    mixBus.connect(monoTap);
+    monoTap.connect(this._chunkerNode);
+
+    // A ScriptProcessorNode only fires onaudioprocess while it's part of a
+    // graph that reaches audioContext.destination — routing through a
+    // zero-gain node keeps it "live" without producing any audible echo.
     const silentSink = this.audioContext.createGain();
     silentSink.gain.value = 0;
     this._chunkerNode.connect(silentSink);

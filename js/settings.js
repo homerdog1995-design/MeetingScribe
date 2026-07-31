@@ -41,6 +41,16 @@ export async function initSettings() {
   wireActionButtons();
 
   await Promise.all([refreshEngineDetection(), refreshStorageStats(), refreshBackupList()]);
+
+  // Belt-and-braces: re-sync this one checkbox any time the settings store
+  // changes for any reason, so it can never visually drift from the actual
+  // persisted value — e.g. if the enable flow (which round-trips through a
+  // confirmation modal) resolves while other async init work is still in
+  // flight on a slow connection, nothing else was re-reading this field.
+  store.subscribe('settings', (settings) => {
+    const checkbox = qs('#setting-webspeech-enabled');
+    if (document.activeElement !== checkbox) checkbox.checked = Boolean(settings.engines.webSpeech.enabled);
+  });
 }
 
 // ---------------------------------------------------------------------------

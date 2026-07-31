@@ -135,9 +135,16 @@ export function openModal(cardContent, { onClose = null } = {}) {
     if (event.key === 'Escape') close();
   }
 
-  overlay.addEventListener('click', (event) => {
-    if (event.target === overlay) close();
-  });
+  // Attaching this on the very next tick (not synchronously) matters on
+  // mobile: some browsers can dispatch a residual/synthetic click from the
+  // same tap gesture that triggered opening this modal, and if that lands
+  // on the newly-inserted overlay it would close the modal instantly —
+  // which looks indistinguishable from "nothing happened" to the user.
+  setTimeout(() => {
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) close();
+    });
+  }, 0);
   document.addEventListener('keydown', onKeydown);
 
   root.appendChild(overlay);

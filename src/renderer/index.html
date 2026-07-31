@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="X-UA-Compatible" content="IE=edge" />
+<title>MeetingScribe</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body data-theme="light" data-font-size="medium">
+
+<div id="app">
+
+  <!-- ============================== SIDEBAR ============================== -->
+  <aside id="sidebar" aria-label="Primary navigation">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">◆</span>
+      <span class="brand-name">MeetingScribe</span>
+    </div>
+
+    <button id="btn-new-meeting" class="btn btn-primary btn-block" type="button">
+      <span class="icon" aria-hidden="true">＋</span> New meeting
+    </button>
+
+    <div class="search-box">
+      <input id="global-search-input" type="search" placeholder="Search meetings, transcripts, tags…" aria-label="Search meetings" />
+    </div>
+
+    <nav class="sidebar-nav" aria-label="Views">
+      <button class="nav-item active" data-view="library" type="button">Library</button>
+      <button class="nav-item" data-view="settings" type="button">Settings</button>
+    </nav>
+
+    <div class="sidebar-tags" id="sidebar-tag-list" aria-label="Tags"></div>
+
+    <div class="sidebar-footer">
+      <button id="engine-status-badge" class="engine-badge" type="button" title="AI engine status">
+        <span class="dot" id="engine-status-dot"></span>
+        <span id="engine-status-text">Checking engines…</span>
+      </button>
+    </div>
+  </aside>
+
+  <!-- ============================== MAIN CONTENT ============================== -->
+  <main id="main-content">
+
+    <!-- ---------- LIBRARY VIEW ---------- -->
+    <section id="view-library" class="view active" aria-label="Meeting library">
+      <header class="view-header">
+        <h1>Meeting Library</h1>
+        <div class="library-controls">
+          <select id="filter-archived" aria-label="Filter">
+            <option value="active">Active</option>
+            <option value="archived">Archived</option>
+            <option value="all">All</option>
+          </select>
+          <select id="sort-by" aria-label="Sort by">
+            <option value="updated_at">Last updated</option>
+            <option value="created_at">Date created</option>
+            <option value="title">Title</option>
+            <option value="duration_ms">Duration</option>
+          </select>
+          <button id="btn-sort-dir" class="btn btn-icon" type="button" title="Toggle sort direction">↓</button>
+        </div>
+      </header>
+
+      <div id="meeting-list" class="meeting-list" role="list"></div>
+      <div id="library-empty-state" class="empty-state hidden">
+        <p>No meetings yet.</p>
+        <button id="btn-empty-new-meeting" class="btn btn-primary" type="button">Start your first meeting</button>
+      </div>
+
+      <div id="pagination-controls" class="pagination-controls"></div>
+    </section>
+
+    <!-- ---------- MEETING WORKSPACE VIEW ---------- -->
+    <section id="view-meeting" class="view" aria-label="Meeting workspace">
+      <header class="meeting-header">
+        <div class="meeting-title-row">
+          <button id="btn-back-to-library" class="btn btn-icon" type="button" title="Back to library">←</button>
+          <input id="meeting-title-input" class="meeting-title-input" type="text" value="Untitled meeting" aria-label="Meeting title" />
+          <button id="btn-duplicate-meeting" class="btn btn-icon" type="button" title="Duplicate meeting">⧉</button>
+          <button id="btn-archive-meeting" class="btn btn-icon" type="button" title="Archive meeting">🗄</button>
+          <button id="btn-delete-meeting" class="btn btn-icon btn-danger" type="button" title="Delete meeting">🗑</button>
+        </div>
+        <div class="meeting-meta" id="meeting-meta"></div>
+
+        <div class="recording-toolbar" id="recording-toolbar">
+          <div class="mode-selector" role="tablist" aria-label="Recording mode">
+            <button class="mode-btn active" data-mode="microphone" type="button">Microphone</button>
+            <button class="mode-btn" data-mode="system" type="button">System audio</button>
+            <button class="mode-btn" data-mode="mixed" type="button">Mixed</button>
+          </div>
+
+          <div class="level-meters" aria-hidden="true">
+            <div class="level-meter-track"><div class="level-meter-fill" id="level-meter-mic"></div></div>
+            <div class="level-meter-track"><div class="level-meter-fill" id="level-meter-system"></div></div>
+          </div>
+
+          <div class="recording-status">
+            <span class="status-dot" id="recording-status-dot"></span>
+            <span id="recording-status-text">Ready</span>
+          </div>
+
+          <div class="timer" id="recording-timer">00:00:00</div>
+
+          <select id="quality-select" aria-label="Recording quality">
+            <option value="low">Low (smaller file)</option>
+            <option value="standard" selected>Standard</option>
+            <option value="high">High (larger file)</option>
+          </select>
+
+          <div class="recording-actions">
+            <button id="btn-record" class="btn btn-primary" type="button">● Record</button>
+            <button id="btn-pause" class="btn" type="button" disabled>Pause</button>
+            <button id="btn-resume" class="btn hidden" type="button">Resume</button>
+            <button id="btn-stop" class="btn btn-danger" type="button" disabled>Stop</button>
+            <button id="btn-bookmark-live" class="btn btn-icon" type="button" title="Add bookmark" disabled>🔖</button>
+          </div>
+        </div>
+
+        <div id="source-picker-banner" class="banner hidden"></div>
+        <div id="web-speech-banner" class="banner banner-warning hidden">
+          Web Speech API is active — audio is being sent to Google's servers for recognition. This is not offline. See Settings → AI Engines to disable.
+        </div>
+        <div id="no-engine-banner" class="banner banner-info hidden">
+          No transcription engine is configured, so live text won't appear. Recording still works normally. See docs/MODEL_SETUP.md or Settings → AI Engines.
+        </div>
+      </header>
+
+      <div class="meeting-tabs" role="tablist">
+        <button class="tab active" data-tab="transcript" type="button">Transcript</button>
+        <button class="tab" data-tab="summary" type="button">Summary</button>
+        <button class="tab" data-tab="speakers" type="button">Speakers</button>
+        <button class="tab" data-tab="playback" type="button">Playback</button>
+        <button class="tab" data-tab="export" type="button">Export</button>
+      </div>
+
+      <div class="meeting-panels">
+
+        <!-- Transcript editor -->
+        <div id="panel-transcript" class="panel active">
+          <div class="editor-toolbar">
+            <button id="btn-undo" class="btn btn-icon" type="button" title="Undo (Ctrl+Z)">↶</button>
+            <button id="btn-redo" class="btn btn-icon" type="button" title="Redo (Ctrl+Shift+Z)">↷</button>
+            <span class="toolbar-divider"></span>
+            <button id="btn-highlight" class="btn btn-icon" type="button" title="Highlight selection">🖍</button>
+            <button id="btn-comment" class="btn btn-icon" type="button" title="Add comment to selection">💬</button>
+            <button id="btn-bookmark-editor" class="btn btn-icon" type="button" title="Bookmark selection">🔖</button>
+            <span class="toolbar-divider"></span>
+            <button id="btn-find-replace" class="btn btn-icon" type="button" title="Find & replace (Ctrl+F)">🔍</button>
+            <button id="btn-version-history" class="btn btn-icon" type="button" title="Version history">🕘</button>
+            <span class="toolbar-divider"></span>
+            <span id="autosave-indicator" class="autosave-indicator">Saved</span>
+          </div>
+
+          <div id="find-replace-bar" class="find-replace-bar hidden">
+            <input id="find-input" type="text" placeholder="Find" />
+            <input id="replace-input" type="text" placeholder="Replace with" />
+            <button id="btn-find-next" class="btn btn-small" type="button">Next</button>
+            <button id="btn-replace-one" class="btn btn-small" type="button">Replace</button>
+            <button id="btn-replace-all" class="btn btn-small" type="button">Replace all</button>
+            <span id="find-match-count" class="find-match-count"></span>
+            <button id="btn-close-find" class="btn btn-icon" type="button">✕</button>
+          </div>
+
+          <div class="transcript-body">
+            <div id="transcript-editor" class="transcript-editor" contenteditable="true" spellcheck="false" aria-label="Transcript editor"></div>
+            <aside id="comments-panel" class="comments-panel" aria-label="Comments"></aside>
+          </div>
+        </div>
+
+        <!-- Summary -->
+        <div id="panel-summary" class="panel">
+          <div class="summary-toolbar">
+            <button id="btn-generate-summary" class="btn btn-primary" type="button">Generate summary</button>
+            <span id="summary-source-note" class="summary-source-note"></span>
+          </div>
+          <div id="summary-content" class="summary-content"></div>
+        </div>
+
+        <!-- Speakers -->
+        <div id="panel-speakers" class="panel">
+          <div id="speaker-list" class="speaker-list"></div>
+        </div>
+
+        <!-- Playback -->
+        <div id="panel-playback" class="panel">
+          <div id="timeline-container" class="timeline-container">
+            <canvas id="waveform-canvas"></canvas>
+            <div id="timeline-markers" class="timeline-markers"></div>
+            <div id="timeline-playhead" class="timeline-playhead"></div>
+          </div>
+          <div class="playback-controls">
+            <button id="btn-playback-toggle" class="btn btn-icon" type="button" title="Play/Pause">▶</button>
+            <span id="playback-time" class="playback-time">00:00:00 / 00:00:00</span>
+            <select id="playback-speed" aria-label="Playback speed">
+              <option value="0.75">0.75×</option>
+              <option value="1" selected>1×</option>
+              <option value="1.25">1.25×</option>
+              <option value="1.5">1.5×</option>
+              <option value="2">2×</option>
+            </select>
+          </div>
+          <audio id="playback-audio" preload="metadata"></audio>
+        </div>
+
+        <!-- Export -->
+        <div id="panel-export" class="panel">
+          <p class="panel-intro">Export this meeting to a file on your computer. Nothing is uploaded anywhere.</p>
+          <div id="export-format-list" class="export-format-list"></div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ---------- SETTINGS VIEW ---------- -->
+    <section id="view-settings" class="view" aria-label="Settings">
+      <header class="view-header"><h1>Settings</h1></header>
+
+      <div class="settings-groups">
+
+        <div class="settings-group">
+          <h2>Appearance</h2>
+          <label class="settings-row">
+            <span>Theme</span>
+            <select id="setting-theme">
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+            </select>
+          </label>
+          <label class="settings-row">
+            <span>Accent colour</span>
+            <input id="setting-accent-color" type="color" value="#4f7cff" />
+          </label>
+          <label class="settings-row">
+            <span>Font size</span>
+            <select id="setting-font-size">
+              <option value="small">Small</option>
+              <option value="medium">Medium</option>
+              <option value="large">Large</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="settings-group">
+          <h2>Recording</h2>
+          <label class="settings-row">
+            <span>Default quality</span>
+            <select id="setting-recording-quality">
+              <option value="low">Low</option>
+              <option value="standard">Standard</option>
+              <option value="high">High</option>
+            </select>
+          </label>
+          <label class="settings-row">
+            <span>Autosave interval (seconds)</span>
+            <input id="setting-autosave-interval" type="number" min="5" max="120" />
+          </label>
+          <label class="settings-row">
+            <span>Speaker-change silence threshold (ms)</span>
+            <input id="setting-speaker-silence-ms" type="number" min="200" max="3000" step="50" />
+          </label>
+        </div>
+
+        <div class="settings-group">
+          <h2>Storage</h2>
+          <div class="settings-row">
+            <span>Data location</span>
+            <div class="settings-row-value">
+              <span id="setting-storage-location">Default</span>
+              <button id="btn-choose-storage-location" class="btn btn-small" type="button">Change…</button>
+            </div>
+          </div>
+          <div id="storage-stats" class="storage-stats"></div>
+        </div>
+
+        <div class="settings-group">
+          <h2>AI Engines</h2>
+          <p class="settings-help">MeetingScribe auto-detects local engines. See <code>docs/MODEL_SETUP.md</code> for setup instructions.</p>
+          <div id="engine-detection-list" class="engine-detection-list"></div>
+          <button id="btn-rescan-engines" class="btn btn-small" type="button">Re-scan</button>
+
+          <h3>whisper.cpp</h3>
+          <label class="settings-row"><span>Binary path</span><input id="setting-whispercpp-binary" type="text" placeholder="/path/to/whisper-cli" /></label>
+          <label class="settings-row"><span>Model path</span><input id="setting-whispercpp-model" type="text" placeholder="/path/to/ggml-base.en.bin" /></label>
+          <label class="settings-row"><span>Model supports tinydiarize (-tdrz)</span><input id="setting-whispercpp-tdrz" type="checkbox" /></label>
+
+          <h3>faster-whisper</h3>
+          <label class="settings-row"><span>Python executable</span><input id="setting-fasterwhisper-python" type="text" placeholder="python3" /></label>
+          <label class="settings-row">
+            <span>Model size</span>
+            <select id="setting-fasterwhisper-size">
+              <option value="tiny">tiny</option>
+              <option value="base">base</option>
+              <option value="small">small</option>
+              <option value="medium">medium</option>
+              <option value="large-v3">large-v3</option>
+            </select>
+          </label>
+          <label class="settings-row">
+            <span>Device</span>
+            <select id="setting-fasterwhisper-device">
+              <option value="cpu">CPU</option>
+              <option value="cuda">CUDA (NVIDIA GPU)</option>
+            </select>
+          </label>
+
+          <h3>Web Speech API <span class="badge badge-warning">Not offline</span></h3>
+          <p class="settings-help">Sends microphone audio to Google's servers. Off by default.</p>
+          <label class="settings-row"><span>Enable Web Speech fallback</span><input id="setting-webspeech-enabled" type="checkbox" /></label>
+
+          <h3>Summaries (local LLM)</h3>
+          <label class="settings-row">
+            <span>Preferred engine</span>
+            <select id="setting-summary-engine">
+              <option value="auto">Auto-detect</option>
+              <option value="ollama">Ollama</option>
+              <option value="llamacpp">llama.cpp server</option>
+              <option value="heuristic">Heuristic only (no LLM)</option>
+            </select>
+          </label>
+          <label class="settings-row"><span>Ollama port</span><input id="setting-ollama-port" type="number" /></label>
+          <label class="settings-row"><span>llama.cpp port</span><input id="setting-llamacpp-port" type="number" /></label>
+        </div>
+
+        <div class="settings-group">
+          <h2>Hotkeys</h2>
+          <label class="settings-row"><span>Start recording</span><input id="hotkey-start" type="text" /></label>
+          <label class="settings-row"><span>Pause recording</span><input id="hotkey-pause" type="text" /></label>
+          <label class="settings-row"><span>Stop recording</span><input id="hotkey-stop" type="text" /></label>
+          <label class="settings-row"><span>Bookmark</span><input id="hotkey-bookmark" type="text" /></label>
+          <label class="settings-row"><span>Search</span><input id="hotkey-search" type="text" /></label>
+          <label class="settings-row"><span>New meeting</span><input id="hotkey-new-meeting" type="text" /></label>
+          <div id="hotkey-warning" class="banner banner-warning hidden"></div>
+        </div>
+
+        <div class="settings-group">
+          <h2>Backups</h2>
+          <label class="settings-row"><span>Automatic backups</span><input id="setting-autobackup-enabled" type="checkbox" /></label>
+          <label class="settings-row"><span>Interval (hours)</span><input id="setting-autobackup-interval" type="number" min="1" max="168" /></label>
+          <label class="settings-row"><span>Include recordings in automatic backups</span><input id="setting-autobackup-include-recordings" type="checkbox" /></label>
+          <div class="settings-actions">
+            <button id="btn-backup-now" class="btn btn-primary" type="button">Back up now</button>
+            <button id="btn-restore-backup" class="btn" type="button">Restore from backup…</button>
+          </div>
+          <div id="backup-list" class="backup-list"></div>
+        </div>
+
+        <div class="settings-group">
+          <h2>Privacy &amp; data</h2>
+          <p class="settings-help">MeetingScribe makes no network requests other than to a local AI engine you configure on 127.0.0.1. Nothing is ever uploaded.</p>
+          <div class="settings-actions">
+            <button id="btn-export-settings" class="btn btn-small" type="button">Export settings…</button>
+            <button id="btn-import-settings" class="btn btn-small" type="button">Import settings…</button>
+            <button id="btn-view-logs" class="btn btn-small" type="button">View diagnostics log</button>
+            <button id="btn-reset-settings" class="btn btn-small btn-danger" type="button">Reset to defaults</button>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<div id="toast-container" class="toast-container" aria-live="polite"></div>
+<div id="modal-root"></div>
+
+<script type="module" src="js/renderer.js"></script>
+</body>
+</html>

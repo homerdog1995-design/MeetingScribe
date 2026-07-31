@@ -169,6 +169,13 @@ async function startRecording() {
     const settings = store.get('settings');
     const quality = e.quality.value;
 
+    // Detect which engine will actually run *before* opening the mic — if
+    // it's Web Speech, skip audio-processing constraints on the recording
+    // stream (see audio.js's start() for why: they can starve Web Speech's
+    // separate, concurrent recognition session of real audio on Android).
+    const detectedEngineLabel = await transcriptionManager.detectAvailableEngine();
+    const willUseWebSpeech = detectedEngineLabel === 'Web Speech API (online, not private)';
+
     // For system/mixed mode, this line is what triggers the browser's own
     // native screen/window/tab picker — see audio.js's _captureSystemAudio.
     // If the user cancels that picker, getDisplayMedia() rejects and we
@@ -176,6 +183,7 @@ async function startRecording() {
     await audioEngine.start(mode, {
       speakerChangeSilenceMs: settings?.transcriptionPreferences?.speakerChangeSilenceMs ?? 700,
       audioBitsPerSecond: QUALITY_BITRATES[quality] ?? QUALITY_BITRATES.standard,
+      minimalAudioConstraints: willUseWebSpeech,
     });
 
     await storage.updateMeeting(meeting.id, {

@@ -49,14 +49,22 @@ export class AudioEngine extends EventTarget {
   }
 
   /** @param {'microphone'|'system'|'mixed'} mode */
-  async start(mode, { speakerChangeSilenceMs = 700, audioBitsPerSecond = 96000 } = {}) {
+  async start(mode, { speakerChangeSilenceMs = 700, audioBitsPerSecond = 96000, minimalAudioConstraints = false } = {}) {
     this._chunkerSilenceMs = speakerChangeSilenceMs;
     this.audioContext = new AudioContext();
     this.recorderChunkIndex = 0;
 
     if (mode === 'microphone' || mode === 'mixed') {
+      // echoCancellation/noiseSuppression/autoGainControl push Chrome to
+      // request Android's "communications" audio mode for this stream,
+      // which can claim the microphone exclusively — starving a
+      // concurrently-running Web Speech recognition session of any real
+      // audio (its session opens fine, but never actually hears anything).
+      // When Web Speech is the active engine, skip these constraints
+      // entirely; they don't benefit it anyway, since it never consumes
+      // this app's own audio pipeline.
       this.micStream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        audio: minimalAudioConstraints ? true : { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
     }
 

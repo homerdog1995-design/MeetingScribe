@@ -64,8 +64,25 @@ function setMode(mode) {
   qsa('.mode-btn').forEach((btn) => btn.classList.toggle('active', btn.dataset.mode === mode));
 }
 
+function isModeSupported(mode) {
+  if (mode === 'system' || mode === 'mixed') return typeof navigator.mediaDevices?.getDisplayMedia === 'function';
+  return true;
+}
+
+/** Mobile browsers (Android Chrome, iOS Safari) don't implement getDisplayMedia() at all — this is a genuine platform gap, not something to silently let the user discover via a crash. */
+function disableUnsupportedModes() {
+  qsa('.mode-btn').forEach((btn) => {
+    if (!isModeSupported(btn.dataset.mode)) {
+      btn.disabled = true;
+      btn.title = 'Not available on this browser/device — system and tab audio capture requires a desktop browser (Chrome, Edge, or Firefox on Windows/Mac/Linux).';
+    }
+  });
+}
+
 export function initRecording() {
   const e = els();
+
+  disableUnsupportedModes();
 
   e.modeButtons.forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -108,7 +125,7 @@ function applyMeetingToToolbar(meeting) {
   const e = els();
   if (!meeting) return;
   const hasFinalRecording = Boolean(meeting.recording_path);
-  e.modeButtons.forEach((btn) => { btn.disabled = hasFinalRecording; });
+  e.modeButtons.forEach((btn) => { btn.disabled = hasFinalRecording || !isModeSupported(btn.dataset.mode); });
   e.quality.disabled = hasFinalRecording;
   e.quality.value = meeting.quality || 'standard';
   setMode(meeting.recording_mode || 'microphone');
@@ -265,7 +282,7 @@ function updateToolbarForStatus(status) {
   e.btnBookmark.disabled = status === 'idle';
   e.btnPause.classList.toggle('hidden', status === 'paused');
   e.btnResume.classList.toggle('hidden', status !== 'paused');
-  e.modeButtons.forEach((btn) => { btn.disabled = status !== 'idle'; });
+  e.modeButtons.forEach((btn) => { btn.disabled = status !== 'idle' || !isModeSupported(btn.dataset.mode); });
   e.quality.disabled = status !== 'idle';
 }
 

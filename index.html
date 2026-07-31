@@ -381,7 +381,18 @@
   // time, and a syntax/runtime error in the app shouldn't block SW setup.
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./service-worker.js').catch((error) => {
+      navigator.serviceWorker.register('./service-worker.js').then(() => {
+        // When a new service worker (shipped with a bumped CACHE_VERSION)
+        // finishes activating and claims this page, reload once so the app
+        // actually starts using the new files instead of continuing to run
+        // whatever was already loaded from the old cache.
+        let hasReloaded = false;
+        navigator.serviceWorker.addEventListener('controllerchange', () => {
+          if (hasReloaded) return;
+          hasReloaded = true;
+          window.location.reload();
+        });
+      }).catch((error) => {
         console.warn('Service worker registration failed (offline use / install will be unavailable):', error);
       });
     });

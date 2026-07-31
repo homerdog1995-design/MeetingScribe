@@ -153,6 +153,16 @@ export class AudioEngine extends EventTarget {
    * pretending it always works.
    */
   async _captureSystemAudio() {
+    // Mobile browsers (Android Chrome, iOS Safari) don't implement
+    // getDisplayMedia() at all as of today — screen/tab capture is
+    // considered desktop-only by every mobile browser vendor, not
+    // something MeetingScribe can polyfill or work around. Checking this
+    // upfront turns a cryptic "getDisplayMedia is not a function" into a
+    // clear explanation instead.
+    if (typeof navigator.mediaDevices?.getDisplayMedia !== 'function') {
+      throw new Error('System audio capture isn\'t available on this browser/device — it requires a desktop browser (Chrome, Edge, or Firefox on Windows/Mac/Linux). Try Microphone mode instead.');
+    }
+
     const stream = await navigator.mediaDevices.getDisplayMedia({
       video: true, // required by getDisplayMedia's contract even though we discard it
       audio: true,

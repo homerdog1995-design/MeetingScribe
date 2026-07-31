@@ -265,11 +265,28 @@ export class AudioEngine extends EventTarget {
     if (this._chunkerBuffer.length === 0) return;
 
     const totalLength = this._chunkerBuffer.reduce((sum, b) => sum + b.length, 0);
+    const durationMs = (totalLength / this.audioContext.sampleRate) * 1000;
+
+    // Whisper's mel-spectrogram computation needs a real minimum amount of
+    // audio to work with — feeding it a very short fragment (in practice,
+    // this only ever happens via the forced final flush on stop(), since
+    // the silence-triggered path already requires >=500ms) is a known
+    // trigger for a low-level abort inside the WASM engine, which then
+    // leaves it permanently wedged for the rest of the recording. Below
+    // this threshold, the fragment is simply too short to contain
+    // meaningfully transcribable speech anyway, so it's dropped rather
+    // than risking the whole engine — this only affects live
+    // transcription, never the saved recording (captured separately).
+    const MIN_CHUNK_MS = 500;
+    if (durationMs < MIN_CHUNK_MS) {
+      this._chunkerBuffer = [];
+      return;
+    }
+
     const merged = new Float32Array(totalLength);
     let offset = 0;
     for (const buf of this._chunkerBuffer) { merged.set(buf, offset); offset += buf.length; }
 
-    const durationMs = (totalLength / this.audioContext.sampleRate) * 1000;
     const startMs = this._chunkerStartMs;
     const endMs = startMs + durationMs;
     this._chunkerStartMs = endMs;

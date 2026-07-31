@@ -171,9 +171,37 @@ let speakerRoundRobin = [];
 let currentSpeakerSlot = -1;
 let lastSegmentEndMs = null;
 
+let lastCommittedText = null;
+let lastCommittedAtPerfMs = 0;
+
 async function handleLiveSegment(meetingId, detail) {
+  const text = detail.text.trim();
+  if (!text) return;
+
+  // Belt-and-braces dedup: regardless of exactly where a duplicate
+  // delivery originates (a browser-level quirk in continuous speech
+  // recognition, or any other source), the same text should never be
+  // committed twice in a row within a short window — that's what an
+  // "echo" in the transcript actually looks like from the user's side.
+  const nowPerf = performance.now();
+  if (text === lastCommittedText && nowPerf - lastCommittedAtPerfMs < 4000) {
+    return;
+  }
+  lastCommittedText = text;
+  lastCommittedAtPerfMs = nowPerf;
+
   const settings = store.get('settings');
-  const silenceThresholdMs = settings?.transcriptionPreferences?.speakerChangeSilenceMs ?? 700;
+  // Web Speech only ever reports the instant a result arrived (both start
+  // and end are the same timestamp — it has no real acoustic boundaries
+  // the way Whisper does), and its delivery is bursty: results often
+  // arrive in clumps after each internal session restart (roughly every
+  // 5-7 seconds). The configured speaker-change threshold (default 700ms)
+  // is tuned for real timestamps and was almost certainly misfiring
+  // constantly for a single continuous speaker under Web Speech. Use a
+  // much longer, less trigger-happy threshold specifically for it.
+  const silenceThresholdMs = transcriptionManager.isWebSpeech
+    ? 3500
+    : (settings?.transcriptionPreferences?.speakerChangeSilenceMs ?? 700);
   const isTurn = detail.speakerTurn || lastSegmentEndMs === null || (detail.startMs - lastSegmentEndMs >= silenceThresholdMs);
 
   if (isTurn) await advanceSpeakerSlot(meetingId);
@@ -185,7 +213,7 @@ async function handleLiveSegment(meetingId, detail) {
     speakerId,
     startMs: Math.round(detail.startMs),
     endMs: Math.round(detail.endMs),
-    text: detail.text,
+    text,
     confidence: detail.confidence,
     paragraphBreak: isTurn,
   }]);
@@ -212,6 +240,8 @@ async function advanceSpeakerSlot(meetingId) {
 }
 
 function resetSpeakerRotation(meeting) {
+  lastCommittedText = null;
+  lastCommittedAtPerfMs = 0;
   speakerRoundRobin = meeting.speakers.slice().sort((a, b) => a.sort_index - b.sort_index).map((s) => s.id);
   currentSpeakerSlot = speakerRoundRobin.length - 1;
   lastSegmentEndMs = meeting.segments.length ? meeting.segments[meeting.segments.length - 1].end_ms : null;

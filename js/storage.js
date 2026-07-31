@@ -154,10 +154,28 @@ async function deleteMeeting(id) {
     deleteAllByIndex('meeting_tags', 'meeting_id', id),
     deleteAllByIndex('transcript_versions', 'meeting_id', id),
     deleteOne('summaries', id).catch(() => {}),
+    deleteOrphanedSessionsForMeeting(id),
   ]);
   if (meeting.recording_path) await deleteOne('recordings', meeting.recording_path).catch(() => {});
   await deleteOne('meetings', id);
   await refreshTagUsageCounts();
+}
+
+/**
+ * recording_sessions has no meeting_id index (it's a small, short-lived
+ * table — only ever holds in-progress or crashed sessions, never
+ * accumulates meaningfully), so a full scan + filter is fine here and
+ * avoids a schema migration just for this. Previously these were never
+ * cleaned up on delete, which could leave a crash-recovery prompt
+ * referencing a meeting that no longer exists.
+ */
+async function deleteOrphanedSessionsForMeeting(meetingId) {
+  const sessions = await getAll('recording_sessions');
+  for (const session of sessions.filter((s) => s.meeting_id === meetingId)) {
+    const chunks = await getAllByIndex('recording_chunks', 'session_id', session.id);
+    for (const chunk of chunks) await deleteOne('recording_chunks', chunk.id);
+    await deleteOne('recording_sessions', session.id);
+  }
 }
 
 async function archiveMeeting(id, archived) {
@@ -546,6 +564,15 @@ async function combineSessionChunks(sessionId) {
 }
 
 async function finalizeRecording(sessionId, meetingId, durationMs) {
+  const meeting = await getOne('meetings', meetingId);
+  if (!meeting) {
+    // The meeting was deleted (e.g. while a crash-recovery prompt was
+    // still pending) — discard the orphaned session/chunks rather than
+    // throwing partway through and leaving a wasted recording Blob behind.
+    await discardSession(sessionId);
+    return { recordingId: null, discarded: true };
+  }
+
   const { blob, mimeType, chunkIds } = await combineSessionChunks(sessionId);
   const recordingId = newId('rec');
   await putOne('recordings', { id: recordingId, meeting_id: meetingId, blob, mime_type: mimeType, created_at: Date.now() });

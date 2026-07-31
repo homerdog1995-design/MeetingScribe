@@ -259,9 +259,9 @@ async function startTranscriptOnlyRecording(meeting, settings) {
   e.sourceBanner.textContent = 'Transcript-only mode: on this device, Web Speech needs sole access to your microphone, so no audio is being recorded for this meeting — only the live transcript.';
 }
 
-function pauseRecording() {
+async function pauseRecording() {
   if (transcriptOnlyMode) {
-    transcriptionManager.stop();
+    await transcriptionManager.stop();
     pausedAtPerfMs = performance.now();
     store.patch('recording', { status: 'paused' });
     updateToolbarForStatus('paused');
@@ -389,13 +389,24 @@ function initCrashRecovery() {
         el('div', { class: 'modal-actions' }, [
           el('button', {
             class: 'btn', type: 'button',
-            onClick: async () => { await storage.discardSession(session.id); close(); },
+            onClick: async () => {
+              try {
+                await storage.discardSession(session.id);
+              } catch (error) {
+                showToast(`Could not discard: ${error.message}`, 'error');
+              }
+              close();
+            },
           }, 'Discard'),
           el('button', {
             class: 'btn btn-primary', type: 'button',
             onClick: async () => {
-              await storage.recoverSession(session);
-              showToast('Recording recovered.', 'success');
+              try {
+                const result = await storage.recoverSession(session);
+                showToast(result?.discarded ? 'That meeting no longer exists — the leftover recording was discarded.' : 'Recording recovered.', 'success');
+              } catch (error) {
+                showToast(`Could not recover this recording: ${error.message}`, 'error');
+              }
               close();
             },
           }, 'Recover'),

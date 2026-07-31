@@ -52,6 +52,17 @@ export class WebSpeechProvider extends TranscriptionProvider {
   _launchRecognition() {
     if (this._stopped) return;
 
+    // Chrome's continuous mode has a real-world quirk where a given result
+    // index can be redelivered across onresult events (event.resultIndex
+    // doesn't always reliably mark "everything before this was already
+    // seen") — tracking the highest index WE'VE already committed
+    // ourselves, and never processing backwards from there, is what
+    // actually prevents the same finalized phrase from being turned into
+    // duplicate segments (visible as repeated/echoed words in the
+    // transcript). Reset per session since each new recognition object
+    // starts its own fresh results array.
+    this._lastProcessedResultIndex = -1;
+
     const recognition = new SpeechRecognitionImpl();
     recognition.continuous = true;
     // interimResults is now on purely for diagnostics: onresult below still
@@ -69,12 +80,14 @@ export class WebSpeechProvider extends TranscriptionProvider {
     recognition.onresult = (event) => {
       this._clearStallWatchdog();
       this._armStallWatchdog();
-      for (let i = event.resultIndex; i < event.results.length; i++) {
+      const startAt = Math.max(event.resultIndex, this._lastProcessedResultIndex + 1);
+      for (let i = startAt; i < event.results.length; i++) {
         const result = event.results[i];
         if (!result.isFinal) {
           logger.info('webSpeech', 'Interim result (not yet committed)', { transcript: result[0].transcript });
           continue;
         }
+        this._lastProcessedResultIndex = i;
         const text = result[0].transcript.trim();
         if (!text) continue;
         logger.info('webSpeech', 'Final result committed as a segment', { text });

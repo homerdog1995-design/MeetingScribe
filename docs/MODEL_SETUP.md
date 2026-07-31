@@ -16,38 +16,74 @@ page, ever. Whisper WASM is now the primary offline engine.
 
 This runs whisper.cpp compiled to WebAssembly, entirely inside a Web
 Worker in this page — no external process, no network request once the
-files below are in place.
+files below are in place. **This setup needs a computer** (it involves
+downloading files and pushing them to this repo) — once done, it works on
+every device that loads this app, phone included.
 
-You'll need a build of whisper.cpp's `examples/whisper.wasm` target. If you
-have `git`, `cmake`, and the Emscripten SDK (`emsdk`) installed:
+You need exactly three files in `assets/whisper-wasm/`:
+
+```
+assets/whisper-wasm/whisper.js        <- Emscripten-generated glue/loader script
+assets/whisper-wasm/whisper.wasm      <- compiled WASM binary (only if your build produces one separately — see note below)
+assets/whisper-wasm/ggml-model.bin    <- a GGML model file, renamed to exactly this
+```
+
+**The model filename must be exactly `ggml-model.bin`, and the glue script
+must be exactly `whisper.js`.** A browser can't scan a directory for "any
+file matching a pattern" the way a desktop app can, so detection checks
+these exact paths.
+
+### Path 1 — extract from the official live demo (no building required)
+
+whisper.cpp's maintainers host a continuously-updated live demo at
+**https://whisper.ggerganov.com/**. You can pull the already-compiled files
+straight from it instead of building anything:
+
+1. On a desktop browser (Chrome or Edge), open that URL.
+2. Open DevTools (F12) → **Network** tab → reload the page.
+3. Filter by **JS**, find the main script (likely named `libmain.js` — by
+   default this build embeds the WASM binary inside it as base64, so
+   there's often no separate `.wasm` file to find), right-click it →
+   **Save response as...** → rename it to `whisper.js`. If a separate
+   `.wasm` file also loads, save and rename that to `whisper.wasm` too.
+4. On the same page, pick a model from the dropdown (start with
+   **tiny.en**, 75MB) — clicking it downloads the model file directly.
+   Rename whatever you get to `ggml-model.bin`.
+5. Upload all files you have to `assets/whisper-wasm/` in this repo
+   (github.com's web UI: **Add file → Upload files** works fine, no git
+   needed) and commit to `main`.
+
+### Path 2 — build from source with Emscripten (if Path 1 doesn't work for you)
+
+Requires `git`, `cmake`, and the Emscripten SDK (`emsdk`) installed:
 
 ```sh
 git clone https://github.com/ggml-org/whisper.cpp.git
 cd whisper.cpp
-source /path/to/emsdk/emsdk_env.sh
-emcmake cmake -B build-wasm
-cmake --build build-wasm --target whisper.wasm
+mkdir build-em && cd build-em
+emcmake cmake ..
+make -j
 ```
 
-The build output includes an Emscripten-generated glue script and a
-compiled `.wasm` binary. Copy (renaming as needed) exactly these three
-files into this app's `assets/whisper-wasm/` directory:
+The build output lands in `build-em/bin/`. Copy it into this repo's
+`assets/whisper-wasm/`, renaming as you go:
 
+```sh
+cp bin/libmain.js  /path/to/this/repo/assets/whisper-wasm/whisper.js
+# Only present if you built with -DWHISPER_WASM_SINGLE_FILE=OFF:
+cp bin/libmain.wasm /path/to/this/repo/assets/whisper-wasm/whisper.wasm
 ```
-assets/whisper-wasm/whisper.js       <- the Emscripten glue/loader script
-assets/whisper-wasm/whisper.wasm     <- the compiled WASM binary (same basename as whisper.js)
-assets/whisper-wasm/ggml-model.bin   <- a GGML model file, renamed to exactly this
-```
 
-**The model filename must be exactly `ggml-model.bin`.** The desktop
-version could scan the directory for any `ggml-*.bin` file; a browser
-cannot list directory contents at all, so detection instead checks this
-one fixed path. Download a small model to start with (`ggml-base.en.bin`
-or `ggml-tiny.en.bin` from the whisper.cpp model repository) and rename it.
+By default (`WHISPER_WASM_SINGLE_FILE=ON`) the WASM binary is embedded as
+base64 inside `libmain.js` itself, so there's no separate `.wasm` file to
+copy — that's expected, not an error. Then add a model file (download one
+from the whisper.cpp model repository, e.g. `ggml-tiny.en.bin`) renamed to
+`ggml-model.bin`, and push everything to `main`.
 
-Once the three files are in place, open **Settings → AI Engines → Re-scan**
-— no restart needed, since detection re-checks these files every time you
-click it. You should see "Whisper WASM — detected". Start a short recording
+Once the files are in place (either path), open **Settings → AI Engines →
+Re-scan** — no restart needed, since detection re-checks these files every
+time you click it. You should see "Whisper WASM — detected". Start a short
+recording
 to confirm transcribed text appears in the Transcript tab.
 
 **Version sensitivity:** whisper.cpp's exported JS function names

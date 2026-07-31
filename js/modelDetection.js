@@ -17,6 +17,7 @@
 
 import { settingsStore } from './settingsStore.js';
 import { detectAvailableLlm } from './summaryEngine.js';
+import { isAvailable as isDiarizationAvailable } from './diarization.js';
 
 const ASSET_BASE = './assets/whisper-wasm/';
 
@@ -42,16 +43,18 @@ async function detectWebSpeech(settings) {
 
 export async function detectAll() {
   const settings = await settingsStore.get();
-  const [whisperWasm, webSpeech, llm] = await Promise.all([
+  const [whisperWasm, webSpeech, llm, diarization] = await Promise.all([
     detectWhisperWasm(),
     detectWebSpeech(settings),
     detectAvailableLlm(),
+    isDiarizationAvailable(),
   ]);
   return {
     whisperWasm,
     webSpeech,
     ollama: llm.ollama,
     llamaCpp: llm.llamaCpp,
+    diarization: { available: diarization },
     detectedAt: Date.now(),
   };
 }

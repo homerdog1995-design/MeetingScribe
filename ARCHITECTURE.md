@@ -158,7 +158,9 @@ Works immediately, no setup: recording (mic/system/mixed, subject to §10's
 browser capture caveats), the meeting library, transcript editor (undo/redo,
 find/replace, highlights, comments, bookmarks, version history, autosave),
 speaker management, search, all 7 export formats, backups (single JSON
-file), and the heuristic (non-LLM) summarizer.
+file), the heuristic (non-LLM) summarizer, and **true acoustic speaker
+diarization** (a vendored sherpa-onnx WebAssembly build — pyannote speech
+segmentation + a speaker-embedding network, clustered on-device; see §12).
 
 Requires one-time setup (see `docs/MODEL_SETUP.md`): Whisper WASM (build/
 place 3 files), Ollama or llama.cpp for LLM summaries (plus the CORS
@@ -215,3 +217,45 @@ implements `providerBase.js`'s interface and gets added to
 under `js/exporters/` and an entry in `exportEngine.js`'s `FORMATS`/
 `BUILDERS`; a new settings field goes in `settingsStore.js`'s
 `DEFAULT_SETTINGS` plus a UI control wired in `settings.js`.
+
+## 12. Speaker diarization (`diarization.js` / `diarizationWorker.js`)
+
+Unlike everything else in this app, this pipeline runs a *second*,
+independent WebAssembly engine — a vendored build of
+[sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (Apache-2.0), which
+bundles a pyannote speech-segmentation model and a speaker-embedding
+network directly in its `.data` package (`assets/speaker-diarization/`,
+~56MB). It has nothing to do with Whisper WASM or Web Speech; it doesn't
+transcribe anything. It only answers "who was probably talking, and when,"
+by extracting a voice-characteristic embedding for each detected speech
+segment and clustering those embeddings — the same category of technique
+real diarization products use, running entirely on-device.
+
+**Why this is a batch, not a live, feature:** clustering needs embeddings
+from across the whole conversation to group speakers correctly — there's
+no meaningful way to do this incrementally in real time. So it runs as an
+on-demand "Detect speakers" pass (`speakers.js`) over a *finished*
+recording, not a live indicator during recording. It also means it's only
+available for meetings with actual saved audio — Web Speech's
+transcript-only mode (§ recording.js's file header) never saves audio, so
+there's nothing for this pipeline to analyze in that case.
+
+**Why it doesn't need any user setup, unlike Whisper WASM:** the required
+model/wasm files are committed directly into this repo (fetched from
+sherpa-onnx's official GitHub release, redistributed under its Apache-2.0
+license), rather than requiring a per-deployment manual download the way
+Whisper WASM's assets do. They're deliberately *not* in the service
+worker's precache list, though — at ~56MB, forcing that download on every
+first visit regardless of whether the feature is ever used would be a poor
+default. It downloads lazily (and gets cached automatically for offline
+reuse afterward) the first time "Detect speakers" is actually clicked.
+
+**How results get applied:** the clustering output is a list of
+`{startMs, endMs, speaker}` turns (speaker is a 0-indexed cluster id, not
+an identity — it has no idea whose voice it is, only that voices A and B
+sound different). `speakers.js` creates one speaker record per cluster,
+then reassigns every existing transcript segment to whichever turn overlaps
+it the most (falling back to nearest-by-time for a segment that falls
+entirely in a gap between turns), and removes whatever speakers are left
+unused afterward — typically the old heuristic round-robin speakers this
+replaces.

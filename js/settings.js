@@ -184,6 +184,7 @@ async function refreshEngineDetection() {
   const rows = [
     { label: 'Whisper WASM (on-device)', ok: detection.whisperWasm.available },
     { label: 'Web Speech API', ok: detection.webSpeech.enabled },
+    { label: 'Speaker Diarization (on-device)', ok: detection.diarization.available },
     { label: 'Ollama', ok: detection.ollama.available },
     { label: 'llama.cpp server', ok: detection.llamaCpp.available },
   ];

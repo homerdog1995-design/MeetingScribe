@@ -354,6 +354,13 @@ async function upsertSpeaker(meetingId, speaker) {
   return row;
 }
 
+/** Used after diarization reassigns every segment away from the old heuristic speakers — deletes a speaker only if nothing still references it, so this is always safe to call speculatively. */
+async function deleteSpeakerIfUnused(meetingId, speakerId) {
+  const segments = await getAllByIndex('segments', 'meeting_id', meetingId);
+  const stillUsed = segments.some((s) => s.speaker_id === speakerId);
+  if (!stillUsed) await deleteOne('speakers', speakerId);
+}
+
 async function recomputeSpeakerSpeakingTime(speakerId, meetingId) {
   const segments = await getAllByIndex('segments', 'meeting_id', meetingId);
   const totalMs = segments.filter((s) => s.speaker_id === speakerId).reduce((sum, s) => sum + Math.max(0, s.end_ms - s.start_ms), 0);
@@ -674,7 +681,7 @@ function base64ToBlob(dataUrl, mimeType) {
 export const storage = {
   createMeeting, updateMeeting, getMeeting, deleteMeeting, archiveMeeting, duplicateMeeting, listMeetings,
   addTranscriptSegments, updateTranscriptSegment, deleteTranscriptSegment,
-  upsertSpeaker, getSpeakerStats,
+  upsertSpeaker, getSpeakerStats, deleteSpeakerIfUnused,
   setTags, listAllTags,
   addBookmark, deleteBookmark, addComment, resolveComment, deleteComment,
   saveTranscriptSnapshot, listTranscriptVersions, restoreTranscriptVersion,

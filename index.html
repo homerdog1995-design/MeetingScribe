@@ -190,6 +190,10 @@
 
         <!-- Speakers -->
         <div id="panel-speakers" class="panel">
+          <div class="speakers-toolbar">
+            <button id="btn-detect-speakers" class="btn btn-primary btn-small" type="button">Detect speakers (on-device AI)</button>
+            <span id="diarization-status" class="settings-help"></span>
+          </div>
           <div id="speaker-list" class="speaker-list"></div>
         </div>
 
@@ -303,6 +307,19 @@
           <p class="settings-help">Sends microphone audio to Google's servers. Off by default.</p>
           <label class="settings-row"><span>Enable Web Speech fallback</span><input id="setting-webspeech-enabled" type="checkbox" /></label>
 
+          <h3>Speaker Diarization <span class="badge badge-success">Fully offline</span></h3>
+          <p class="settings-help">
+            Real acoustic speaker identification — voice embeddings extracted
+            on-device and clustered, not a pause-length guess. Bundled
+            automatically; nothing to set up. Only works on meetings with a
+            saved recording (mic/system/mixed mode) — Web Speech's
+            transcript-only mode never saves audio, so there's nothing to
+            analyze for those meetings. Runs as an on-demand "Detect
+            speakers" pass in the Speakers tab after a recording finishes —
+            not live during recording, since clustering needs the whole
+            conversation. The ~56MB model bundle downloads once and is
+            cached for offline use afterward.
+          </p>
           <h3>Summaries (local LLM)</h3>
           <p class="settings-help">
             Requires Ollama or a llama.cpp server running locally, configured

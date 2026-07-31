@@ -60,6 +60,8 @@ const PRECACHE_URLS = [
   './js/exporters/html.js',
   './js/exporters/rtf.js',
   './js/settings.js',
+  './js/diarization.js',
+  './js/diarizationWorker.js',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/apple-touch-icon.png',

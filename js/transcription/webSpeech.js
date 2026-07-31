@@ -81,7 +81,17 @@ export class WebSpeechProvider extends TranscriptionProvider {
     };
 
     this._recognition = recognition;
-    recognition.start();
+    try {
+      recognition.start();
+    } catch (error) {
+      // Android Chrome in particular can throw synchronously here (e.g.
+      // InvalidStateError) if a new session starts too soon after the
+      // previous one's onend — without this catch, that exception was
+      // unhandled and silently ended the whole restart loop with no
+      // visible error at all, which is indistinguishable from "broken."
+      this.dispatchEvent(new CustomEvent('error', { detail: { message: `Web Speech API failed to (re)start: ${error.message}`, fatal: false } }));
+      if (!this._stopped) setTimeout(() => this._launchRecognition(), 300);
+    }
   }
 
   // eslint-disable-next-line class-methods-use-this

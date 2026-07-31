@@ -166,29 +166,52 @@ async function redo() {
 // Live transcription -> persisted segments
 // ---------------------------------------------------------------------------
 
-const MAX_AUTO_SPEAKERS = 4;
+// With no real acoustic signal to distinguish speakers (see the file header
+// note on the round-robin heuristic), always creating brand-new speakers
+// before ever cycling back meant a simple one- or two-person conversation
+// would get 4 different auto-created identities before Speaker 1 ever
+// reappeared. Capping at 2 means cycling starts immediately after the
+// second speaker exists — a much better default for the common case.
+// Manual reassignment in the Speakers tab still covers meetings with more
+// than two people.
+const MAX_AUTO_SPEAKERS = 2;
 let speakerRoundRobin = [];
 let currentSpeakerSlot = -1;
 let lastSegmentEndMs = null;
 
 let lastCommittedText = null;
 let lastCommittedAtPerfMs = 0;
+let lastCommittedSegmentId = null;
 
 async function handleLiveSegment(meetingId, detail) {
   const text = detail.text.trim();
   if (!text) return;
 
-  // Belt-and-braces dedup: regardless of exactly where a duplicate
-  // delivery originates (a browser-level quirk in continuous speech
-  // recognition, or any other source), the same text should never be
-  // committed twice in a row within a short window — that's what an
-  // "echo" in the transcript actually looks like from the user's side.
   const nowPerf = performance.now();
-  if (text === lastCommittedText && nowPerf - lastCommittedAtPerfMs < 4000) {
+  const withinRevisionWindow = lastCommittedText !== null && (nowPerf - lastCommittedAtPerfMs) < 8000;
+
+  // This is the actual mechanism behind the "echo": rather than one true
+  // final result per utterance, Chrome's continuous mode can mark a
+  // still-growing, in-progress transcription as isFinal repeatedly —
+  // "I said" -> "I said I" -> "I said I love" -> "I said I love you" are
+  // all revisions of the SAME utterance, not four new ones. Exact-repeat
+  // checking alone (the previous fix) never catches this, because the
+  // text is different each time. Detecting "the new text starts with the
+  // text we already committed" and REPLACING that segment in place
+  // (instead of inserting a new one) is what actually collapses this
+  // pattern down to one clean line.
+  if (withinRevisionWindow && text === lastCommittedText) {
+    return; // exact repeat — nothing to do
+  }
+  if (withinRevisionWindow && lastCommittedSegmentId && text.startsWith(lastCommittedText)) {
+    await storage.updateTranscriptSegment(meetingId, lastCommittedSegmentId, { text });
+    lastCommittedText = text;
+    lastCommittedAtPerfMs = nowPerf;
+    const refreshed = await storage.getMeeting(meetingId);
+    store.set('currentMeeting', refreshed);
+    dirtySinceLastSnapshot = true;
     return;
   }
-  lastCommittedText = text;
-  lastCommittedAtPerfMs = nowPerf;
 
   const settings = store.get('settings');
   // Web Speech only ever reports the instant a result arrived (both start
@@ -209,7 +232,7 @@ async function handleLiveSegment(meetingId, detail) {
 
   const speakerId = speakerRoundRobin[currentSpeakerSlot] || null;
 
-  await storage.addTranscriptSegments(meetingId, [{
+  const inserted = await storage.addTranscriptSegments(meetingId, [{
     speakerId,
     startMs: Math.round(detail.startMs),
     endMs: Math.round(detail.endMs),
@@ -217,6 +240,10 @@ async function handleLiveSegment(meetingId, detail) {
     confidence: detail.confidence,
     paragraphBreak: isTurn,
   }]);
+
+  lastCommittedText = text;
+  lastCommittedAtPerfMs = nowPerf;
+  lastCommittedSegmentId = inserted[0]?.id ?? null;
 
   const refreshed = await storage.getMeeting(meetingId);
   store.set('currentMeeting', refreshed);
@@ -242,6 +269,7 @@ async function advanceSpeakerSlot(meetingId) {
 function resetSpeakerRotation(meeting) {
   lastCommittedText = null;
   lastCommittedAtPerfMs = 0;
+  lastCommittedSegmentId = null;
   speakerRoundRobin = meeting.speakers.slice().sort((a, b) => a.sort_index - b.sort_index).map((s) => s.id);
   currentSpeakerSlot = speakerRoundRobin.length - 1;
   lastSegmentEndMs = meeting.segments.length ? meeting.segments[meeting.segments.length - 1].end_ms : null;

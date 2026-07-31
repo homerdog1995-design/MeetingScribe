@@ -1,19 +1,13 @@
-node_modules/
-release/
-dist/
-*.log
 .DS_Store
 Thumbs.db
+*.log
 
-# Local user data if the app is ever run from inside the repo during development
-userdata-dev/
-*.db
-*.db-journal
-*.db-wal
-*.db-shm
-
-# Local model / engine binaries a developer may drop in for testing
+# Local model/engine assets a developer drops in for testing Whisper WASM —
+# these are user-supplied, not part of the source tree (see docs/MODEL_SETUP.md)
 assets/whisper-wasm/*.wasm
 assets/whisper-wasm/*.bin
 assets/whisper-wasm/*.js
 !assets/whisper-wasm/.gitkeep
+
+# Only relevant if you run `npm run start` (npx serve) locally
+node_modules/

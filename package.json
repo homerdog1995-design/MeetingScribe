@@ -1,66 +1,13 @@
 {
   "name": "meetingscribe",
-  "version": "1.0.0",
-  "description": "Privacy-first, fully offline meeting recorder, transcriber and summarizer. No cloud services, no accounts, no telemetry.",
+  "version": "2.0.0",
+  "description": "Privacy-first, fully offline meeting recorder, transcriber and summarizer — a browser-only Progressive Web App. No cloud services, no accounts, no telemetry, no backend, no build step.",
   "author": "MeetingScribe Contributors",
   "license": "MIT",
   "private": true,
-  "main": "src/main/main.js",
-  "engines": {
-    "node": ">=18.0.0"
-  },
+  "type": "module",
   "scripts": {
-    "start": "electron .",
-    "dev": "electron . --dev",
-    "postinstall": "electron-rebuild -f -w better-sqlite3",
-    "rebuild": "electron-rebuild -f -w better-sqlite3",
-    "lint": "node ./scripts/check-syntax.js",
-    "dist": "electron-builder",
-    "dist:dir": "electron-builder --dir"
-  },
-  "dependencies": {
-    "archiver": "^7.0.1",
-    "better-sqlite3": "^11.3.0",
-    "docx": "^9.0.2",
-    "extract-zip": "^2.0.1"
-  },
-  "devDependencies": {
-    "@electron/rebuild": "^3.6.1",
-    "electron": "^33.0.0",
-    "electron-builder": "^25.1.8"
-  },
-  "build": {
-    "appId": "com.meetingscribe.app",
-    "productName": "MeetingScribe",
-    "asarUnpack": [
-      "node_modules/better-sqlite3/**"
-    ],
-    "files": [
-      "src/**/*",
-      "package.json",
-      "!**/*.map"
-    ],
-    "directories": {
-      "output": "release",
-      "buildResources": "build"
-    },
-    "win": {
-      "target": ["nsis"],
-      "icon": "build/icon.ico"
-    },
-    "mac": {
-      "target": ["dmg"],
-      "icon": "build/icon.icns",
-      "category": "public.app-category.productivity"
-    },
-    "linux": {
-      "target": ["AppImage", "deb"],
-      "icon": "build/icon.png",
-      "category": "Office"
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true
-    }
+    "start": "npx --yes serve . -l 5173",
+    "lint": "node ./scripts/check-syntax.js"
   }
 }

@@ -15,82 +15,38 @@ page, ever. Whisper WASM is now the primary offline engine.
 ## Option A — Whisper WASM (runs inside the browser tab, fully offline)
 
 This runs whisper.cpp compiled to WebAssembly, entirely inside a Web
-Worker in this page — no external process, no network request once the
-files below are in place. **This setup needs a computer** (it involves
-downloading files and pushing them to this repo) — once done, it works on
-every device that loads this app, phone included.
+Worker in this page, via a vendored library
+([@timur00kh/whisper.wasm](https://github.com/timur00kh/whisper.wasm),
+MIT) — no external process, no network request once the model is cached.
 
-You need exactly three files in `assets/whisper-wasm/`:
+**No computer, no manual file setup needed at all — this can be done
+entirely from your phone.** Unlike the very first version of this setup:
 
-```
-assets/whisper-wasm/whisper.js        <- Emscripten-generated glue/loader script
-assets/whisper-wasm/whisper.wasm      <- compiled WASM binary (only if your build produces one separately — see note below)
-assets/whisper-wasm/ggml-model.bin    <- a GGML model file, renamed to exactly this
-```
+1. Open **Settings → AI Engines**.
+2. Under **Whisper WASM**, pick a model size from the dropdown. `base.en`
+   is a reasonable default balance of speed/accuracy/size; `tiny.en` is
+   smaller and faster but less accurate; `small.en` is the most accurate
+   but the slowest and largest download.
+3. Click **Download & enable**.
+4. Wait for the progress bar — this is a real download (75MB-466MB
+   depending on the model you picked), so it'll take a while on a slow
+   connection, but it only happens once. The model is cached in this
+   browser's own storage afterward.
+5. Once it finishes, "Whisper WASM" shows as detected, and it becomes the
+   active transcription engine automatically the next time you record.
 
-**The model filename must be exactly `ggml-model.bin`, and the glue script
-must be exactly `whisper.js`.** A browser can't scan a directory for "any
-file matching a pattern" the way a desktop app can, so detection checks
-these exact paths.
+**Why this used to require a computer, and doesn't anymore:** the earlier
+approach required manually building or extracting three specific files
+(`whisper.js`, `whisper.wasm`, a renamed model file) and pushing them into
+this repo by hand. This library instead fetches model weights directly
+from Hugging Face and caches them in this browser's IndexedDB storage
+itself — so the "one-time setup" now happens on whatever device is
+actually running the app, no separate computer step required.
 
-### Path 1 — extract from the official live demo (no building required)
-
-whisper.cpp's maintainers host a continuously-updated live demo at
-**https://whisper.ggerganov.com/**. You can pull the already-compiled files
-straight from it instead of building anything:
-
-1. On a desktop browser (Chrome or Edge), open that URL.
-2. Open DevTools (F12) → **Network** tab → reload the page.
-3. Filter by **JS**, find the main script (likely named `libmain.js` — by
-   default this build embeds the WASM binary inside it as base64, so
-   there's often no separate `.wasm` file to find), right-click it →
-   **Save response as...** → rename it to `whisper.js`. If a separate
-   `.wasm` file also loads, save and rename that to `whisper.wasm` too.
-4. On the same page, pick a model from the dropdown (start with
-   **tiny.en**, 75MB) — clicking it downloads the model file directly.
-   Rename whatever you get to `ggml-model.bin`.
-5. Upload all files you have to `assets/whisper-wasm/` in this repo
-   (github.com's web UI: **Add file → Upload files** works fine, no git
-   needed) and commit to `main`.
-
-### Path 2 — build from source with Emscripten (if Path 1 doesn't work for you)
-
-Requires `git`, `cmake`, and the Emscripten SDK (`emsdk`) installed:
-
-```sh
-git clone https://github.com/ggml-org/whisper.cpp.git
-cd whisper.cpp
-mkdir build-em && cd build-em
-emcmake cmake ..
-make -j
-```
-
-The build output lands in `build-em/bin/`. Copy it into this repo's
-`assets/whisper-wasm/`, renaming as you go:
-
-```sh
-cp bin/libmain.js  /path/to/this/repo/assets/whisper-wasm/whisper.js
-# Only present if you built with -DWHISPER_WASM_SINGLE_FILE=OFF:
-cp bin/libmain.wasm /path/to/this/repo/assets/whisper-wasm/whisper.wasm
-```
-
-By default (`WHISPER_WASM_SINGLE_FILE=ON`) the WASM binary is embedded as
-base64 inside `libmain.js` itself, so there's no separate `.wasm` file to
-copy — that's expected, not an error. Then add a model file (download one
-from the whisper.cpp model repository, e.g. `ggml-tiny.en.bin`) renamed to
-`ggml-model.bin`, and push everything to `main`.
-
-Once the files are in place (either path), open **Settings → AI Engines →
-Re-scan** — no restart needed, since detection re-checks these files every
-time you click it. You should see "Whisper WASM — detected". Start a short
-recording
-to confirm transcribed text appears in the Transcript tab.
-
-**Version sensitivity:** whisper.cpp's exported JS function names
-(`Module.init`, `Module.full_default`) have changed shape across releases.
-`whisperWasmWorker.js` defensively handles both the older single-context
-and current multi-context shapes, but a very different or much newer build
-may need small adjustments to that file.
+**If you want to switch models later** (e.g. try a more accurate one),
+just pick a different one in the dropdown and click **Download & enable**
+again — each model size is cached independently, so switching back is
+instant if you've downloaded it before.
 
 ## Option B — Web Speech API (last resort — reads the disclosure first)
 

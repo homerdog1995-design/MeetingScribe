@@ -1,26 +1,32 @@
 'use strict';
 
-/* eslint-env worker */
-/* global importScripts */
-
 /**
- * Runs inside a dedicated Worker so a heavy WASM inference call never blocks
- * the UI thread. This targets the official whisper.cpp `examples/whisper.wasm`
- * Emscripten build (Embind bindings: `Module.init(path)` and
- * `Module.full_default(index, audio, lang, nthreads, translate)`).
+ * Module worker running @timur00kh/whisper.wasm (MIT), a TypeScript wrapper
+ * around whisper.cpp's WebAssembly build — vendored directly into
+ * assets/whisper-wasm-lib/ from its npm package (index.es.js + the bundled
+ * WASM glue, ~1.3MB total; no model weights included in the package itself).
  *
- * VERSION SENSITIVITY (documented, not hidden — see docs/MODEL_SETUP.md,
- * Option C): the exact shape of `init`'s return value has changed between
- * whisper.cpp releases — older single-context builds return a boolean,
- * current multi-context builds return a numeric context index. This worker
- * detects and handles both. If a future upstream release changes the
- * exported function names entirely, only this file needs updating — the
- * rest of the app is unaffected because everything talks to the
- * TranscriptionProvider interface, not to whisper.wasm directly.
+ * REPLACES an earlier, hand-rolled integration against the raw Emscripten
+ * Module API (Module.init/full_default) that required the user to manually
+ * build or extract three files and place them in this repo. This library
+ * wraps that same underlying API far more usably, and — critically — its
+ * ModelManager can fetch model weights directly from Hugging Face and cache
+ * them in IndexedDB itself. That means setup can now happen entirely from
+ * whatever browser is running this app (including a phone), with no
+ * computer or manual file placement needed at all.
+ *
+ * Everything here is worker-safe: the library's core classes
+ * (WhisperWasmService/ModelManager/TranscriptionSession) never touch
+ * `window` or `document` — only its optional browser-audio helper
+ * functions do (file/mic/<audio> -> Float32Array converters), which this
+ * app never imports or calls, since audio.js already produces Float32Array
+ * samples through its own pipeline.
  */
 
-let contextIndex = -1;
-let usesIndexedApi = true;
+import { WhisperWasmService, ModelManager } from '../../assets/whisper-wasm-lib/index.es.js';
+
+let whisperService = null;
+let modelManager = null;
 
 self.onmessage = async (event) => {
   const { type, requestId } = event.data;
@@ -29,8 +35,8 @@ self.onmessage = async (event) => {
       await handleLoad(event.data);
       self.postMessage({ type: 'loaded', requestId });
     } else if (type === 'transcribe') {
-      const segments = await handleTranscribe(event.data);
-      self.postMessage({ type: 'result', requestId, segments });
+      const result = await handleTranscribe(event.data);
+      self.postMessage({ type: 'result', requestId, segments: result });
     } else {
       throw new Error(`Unknown message type: ${type}`);
     }
@@ -39,89 +45,29 @@ self.onmessage = async (event) => {
   }
 };
 
-async function handleLoad({ glueScriptUrl, modelUrl }) {
-  self.Module = self.Module || {};
+async function handleLoad({ modelId, requestId }) {
+  modelManager = new ModelManager({ logLevel: 1 });
+  whisperService = new WhisperWasmService({ logLevel: 1 });
 
-  const runtimeReady = new Promise((resolve) => {
-    const previous = self.Module.onRuntimeInitialized;
-    self.Module.onRuntimeInitialized = () => {
-      if (typeof previous === 'function') previous();
-      resolve();
-    };
+  const supported = await whisperService.checkWasmSupport();
+  if (!supported) throw new Error('WebAssembly is not supported in this browser.');
+
+  // saveToIndexedDB=true means this only ever hits the network on the very
+  // first use of a given model — every load after that (including fully
+  // offline) is served from the browser's own IndexedDB cache.
+  const modelBytes = await modelManager.loadModel(modelId, true, (progress) => {
+    self.postMessage({ type: 'progress', requestId, progress });
   });
-
-  importScripts(glueScriptUrl);
-  await runtimeReady;
-
-  const modelResponse = await fetch(modelUrl);
-  if (!modelResponse.ok) {
-    throw new Error(
-      `Could not read the whisper.wasm model file (HTTP ${modelResponse.status}). ` +
-      'Confirm it is placed under assets/whisper-wasm/ as documented in docs/MODEL_SETUP.md, Option C.'
-    );
-  }
-  const modelBytes = new Uint8Array(await modelResponse.arrayBuffer());
-
-  if (typeof self.Module.FS_createDataFile !== 'function') {
-    throw new Error('The loaded whisper.wasm build does not expose FS_createDataFile — this build is likely incompatible. See docs/MODEL_SETUP.md, Option C.');
-  }
-  self.Module.FS_createDataFile('/', 'ggml-model.bin', modelBytes, true, true, true);
-
-  if (typeof self.Module.init !== 'function') {
-    throw new Error('The loaded whisper.wasm build does not expose an init() function — this build is likely incompatible. See docs/MODEL_SETUP.md, Option C.');
-  }
-
-  const initResult = self.Module.init('ggml-model.bin');
-  const initFailed = initResult === false || initResult === undefined || initResult === -1 ||
-    (typeof initResult === 'number' && initResult < 0);
-  if (initFailed) {
-    throw new Error('whisper.wasm reported it could not load the model. The file may be corrupt or built for a different whisper.cpp version.');
-  }
-
-  usesIndexedApi = typeof initResult === 'number' && typeof self.Module.full_default === 'function' && self.Module.full_default.length >= 5;
-  contextIndex = typeof initResult === 'number' ? initResult : 0;
+  await whisperService.initModel(modelBytes);
 }
 
 async function handleTranscribe({ samples, language }) {
-  if (contextIndex < 0) throw new Error('whisper.wasm model is not loaded.');
-
+  if (!whisperService) throw new Error('Whisper model is not loaded.');
   const floatSamples = samples instanceof Float32Array ? samples : new Float32Array(samples);
-  const capturedLines = [];
-  const previousPrint = self.Module.print;
-  self.Module.print = (line) => capturedLines.push(line);
-
-  try {
-    if (usesIndexedApi) {
-      self.Module.full_default(contextIndex, floatSamples, language || 'en', 4, false);
-    } else {
-      self.Module.full_default(floatSamples, language || 'en', false);
-    }
-  } finally {
-    self.Module.print = previousPrint;
-  }
-
-  return parseSegments(capturedLines);
-}
-
-/** whisper.wasm prints one line per segment: "[hh:mm:ss.mmm --> hh:mm:ss.mmm]  text" */
-function parseSegments(lines) {
-  const pattern = /\[(\d{2}):(\d{2}):(\d{2})\.(\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})\.(\d{3})]\s*(.*)/;
-  const segments = [];
-  for (const line of lines) {
-    const match = pattern.exec(line);
-    if (!match) continue;
-    const [, sh, sm, ss, sms, eh, em, es, ems, text] = match;
-    const trimmed = text.trim();
-    if (!trimmed) continue;
-    segments.push({
-      text: trimmed,
-      startMs: toMs(sh, sm, ss, sms),
-      endMs: toMs(eh, em, es, ems),
-    });
-  }
-  return segments;
-}
-
-function toMs(h, m, s, ms) {
-  return (((Number(h) * 60 + Number(m)) * 60 + Number(s)) * 1000) + Number(ms);
+  const { segments } = await whisperService.transcribe(floatSamples, undefined, {
+    language: language || 'en',
+    threads: 4,
+    translate: false,
+  });
+  return segments.map((s) => ({ text: s.text.trim(), startMs: Math.round(s.timeStart), endMs: Math.round(s.timeEnd) }));
 }

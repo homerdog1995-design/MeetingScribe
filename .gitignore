@@ -2,12 +2,5 @@
 Thumbs.db
 *.log
 
-# Local model/engine assets a developer drops in for testing Whisper WASM —
-# these are user-supplied, not part of the source tree (see docs/MODEL_SETUP.md)
-assets/whisper-wasm/*.wasm
-assets/whisper-wasm/*.bin
-assets/whisper-wasm/*.js
-!assets/whisper-wasm/.gitkeep
-
 # Only relevant if you run `npm run start` (npx serve) locally
 node_modules/

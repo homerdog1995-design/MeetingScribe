@@ -296,12 +296,29 @@
 
           <h3>Whisper WASM <span class="badge badge-success">Fully offline</span></h3>
           <p class="settings-help">
-            Runs entirely in this browser tab, on-device, with no network
-            request. Requires a one-time setup — see <code>docs/MODEL_SETUP.md</code>.
-            This is now the primary offline transcription engine: unlike the
-            desktop version, a browser page cannot spawn native binaries like
-            whisper.cpp or faster-whisper at all, under any circumstances.
+            Runs entirely in this browser tab, on-device — the primary
+            offline transcription engine (a browser page cannot spawn
+            native binaries like whisper.cpp or faster-whisper at all,
+            under any circumstances). Pick a model size and download it
+            once; every load after that (including fully offline) is
+            served from this browser's own cache — no computer or manual
+            file setup needed.
           </p>
+          <label class="settings-row">
+            <span>Model</span>
+            <select id="setting-whisper-model">
+              <option value="tiny.en">tiny.en — smallest, fastest, least accurate (~75MB)</option>
+              <option value="base.en">base.en — recommended balance (~142MB)</option>
+              <option value="small.en">small.en — most accurate, slowest (~466MB)</option>
+              <option value="base.en-q5_1">base.en (quantized) — smaller download, slightly lower accuracy (~57MB)</option>
+              <option value="small.en-q5_1">small.en (quantized) — smaller download, slightly lower accuracy (~190MB)</option>
+            </select>
+          </label>
+          <div class="settings-row">
+            <span id="whisper-wasm-status">Not downloaded yet.</span>
+            <button id="btn-download-whisper-model" class="btn btn-small" type="button">Download &amp; enable</button>
+          </div>
+          <div id="whisper-wasm-progress-track" class="progress-track hidden"><div id="whisper-wasm-progress-fill" class="progress-fill"></div></div>
 
           <h3>Web Speech API <span class="badge badge-warning">Not offline</span></h3>
           <p class="settings-help">Sends microphone audio to Google's servers. Off by default.</p>

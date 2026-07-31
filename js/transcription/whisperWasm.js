@@ -1,83 +1,67 @@
 'use strict';
 
 import { TranscriptionProvider } from './providerBase.js';
+import { settingsStore } from '../settingsStore.js';
 
 /**
- * Runs whisper.cpp entirely inside the page via WebAssembly, in a dedicated
- * Worker (whisperWasmWorker.js). This is now priority #1 in the provider
- * chain (see transcription.js) — with whisper.cpp/faster-whisper gone
- * (neither can run in a browser, since both require spawning a native
- * binary), this is the only remaining engine that transcribes fully
- * offline, on-device.
+ * Runs whisper.cpp entirely in the browser, on-device, via a vendored
+ * library (@timur00kh/whisper.wasm, MIT — assets/whisper-wasm-lib/). This
+ * is priority #1 in the provider chain (transcription.js): the only fully
+ * offline, on-device transcription engine, since whisper.cpp/faster-whisper
+ * (native binaries) can't run in a browser under any circumstances.
  *
- * CHANGED FROM THE ELECTRON VERSION: assets used to be discovered via an
- * absolute filesystem path (window.api.system.getInfo().whisperWasmAssetsDir)
- * and a directory scan for any `ggml-*.bin` file (main/modelDetection.js).
- * Browsers cannot list directory contents at all, so there is no way to
- * "discover" an arbitrary model filename anymore. Instead, the three
- * required files are fetched by a FIXED relative path within the app
- * itself — the user must name the model file exactly `ggml-model.bin`.
- * This is a real reduction in flexibility (previously any ggml-*.bin name
- * worked) but is the only option without a server-side directory listing.
- *
- * Expected files, relative to the app's own origin (see docs/MODEL_SETUP.md,
- * Option C, for exactly how to produce/place them):
- *   assets/whisper-wasm/whisper.js       — Emscripten-generated glue/loader
- *   assets/whisper-wasm/whisper.wasm     — compiled WASM binary (fetched
- *                                           automatically by whisper.js
- *                                           itself; this class never touches
- *                                           it directly)
- *   assets/whisper-wasm/ggml-model.bin   — the GGML model file (fixed name)
+ * Unlike the earlier hand-rolled integration, this one requires no manual
+ * file setup at all — see settings.js's downloadAndEnableWhisperWasm(),
+ * which lets the model be fetched and cached (via the library's own
+ * IndexedDB caching) directly from whatever browser is running this app.
+ * isAvailable() simply checks the settings flag that gets set true once
+ * that has happened successfully at least once.
  */
-const ASSET_BASE = './assets/whisper-wasm/';
-
 export class WhisperWasmProvider extends TranscriptionProvider {
   constructor() {
     super();
     this._worker = null;
     this._requestSeq = 0;
     this._pending = new Map();
+    this._language = 'en';
   }
 
-  get label() { return 'Whisper WASM (in-browser, on-device)'; }
+  get label() { return 'Whisper WASM (on-device)'; }
 
   async isAvailable() {
-    try {
-      const [glueResponse, modelResponse] = await Promise.all([
-        fetch(`${ASSET_BASE}whisper.js`, { method: 'HEAD' }),
-        fetch(`${ASSET_BASE}ggml-model.bin`, { method: 'HEAD' }),
-      ]);
-      return glueResponse.ok && modelResponse.ok;
-    } catch {
-      return false;
-    }
+    const settings = await settingsStore.get();
+    return Boolean(settings.engines.whisperWasm.enabled);
   }
 
-  async start() {
-    this._worker = new Worker(new URL('./whisperWasmWorker.js', import.meta.url));
+  async start({ language }) {
+    const settings = await settingsStore.get();
+    this._language = language || 'en';
+    const modelId = settings.engines.whisperWasm.modelId || 'base.en';
+
+    this._worker = new Worker(new URL('./whisperWasmWorker.js', import.meta.url), { type: 'module' });
     this._worker.onmessage = (event) => this._handleWorkerMessage(event.data);
     this._worker.onerror = (event) => {
       this.dispatchEvent(new CustomEvent('error', { detail: { message: event.message || 'Whisper WASM worker crashed', fatal: true } }));
     };
 
-    await this._call('load', {
-      glueScriptUrl: new URL(`${ASSET_BASE}whisper.js`, window.location.href).href,
-      modelUrl: new URL(`${ASSET_BASE}ggml-model.bin`, window.location.href).href,
-    });
+    // The model should already be cached from Settings by the time
+    // recording starts (see downloadAndEnableWhisperWasm) — this load is
+    // expected to be fast (IndexedDB, no network) in the normal case.
+    await this._call('load', { modelId });
   }
 
   async submitAudioChunk({ wavBuffer, startMs }) {
     if (!this._worker) return;
     try {
       const samples = decodeWavPcm16ToFloat32(wavBuffer);
-      const segments = await this._call('transcribe', { samples }, [samples.buffer]);
+      const segments = await this._call('transcribe', { samples, language: this._language }, [samples.buffer]);
       for (const segment of segments) {
         this.dispatchEvent(new CustomEvent('segment', {
           detail: {
             text: segment.text,
             startMs: startMs + segment.startMs,
             endMs: startMs + segment.endMs,
-            speakerTurn: false, // no speaker-turn signal from this engine; silence-gap fallback handles it
+            speakerTurn: false, // no speaker-turn signal from this engine; the silence-gap fallback in editor.js handles it
             confidence: null,
           },
         }));
@@ -104,6 +88,7 @@ export class WhisperWasmProvider extends TranscriptionProvider {
   _handleWorkerMessage(data) {
     const pending = this._pending.get(data.requestId);
     if (!pending) return;
+    if (data.type === 'progress') return; // only relevant to Settings' download flow, not live transcription
     this._pending.delete(data.requestId);
     if (data.type === 'error') pending.reject(new Error(data.message));
     else if (data.type === 'loaded') pending.resolve();

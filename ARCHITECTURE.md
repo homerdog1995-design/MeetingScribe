@@ -96,17 +96,25 @@ now:
 [Whisper WASM, Web Speech API]
 ```
 
-Whisper WASM (`whisperWasm.js`) runs whisper.cpp compiled to WebAssembly,
-entirely inside a Worker, entirely offline. It requires a one-time asset
-setup (see `docs/MODEL_SETUP.md`) — three files under `assets/whisper-wasm/`:
-`whisper.js` (Emscripten glue), `whisper.wasm` (compiled binary), and
-`ggml-model.bin` (the model weights, a **fixed filename now** — the old
-version could scan a directory for any `ggml-*.bin` file; browsers cannot
-list directory contents at all, so there's no way to "discover" an
-arbitrary filename anymore).
+Whisper WASM (`whisperWasm.js` / `whisperWasmWorker.js`) runs whisper.cpp
+compiled to WebAssembly, entirely inside a Worker, entirely offline. It's
+built on a vendored library
+([@timur00kh/whisper.wasm](https://github.com/timur00kh/whisper.wasm),
+MIT — `assets/whisper-wasm-lib/`) rather than a hand-rolled integration
+against the raw Emscripten API. This matters for setup: the library's
+`ModelManager` fetches model weights directly from Hugging Face and caches
+them in IndexedDB itself, triggered by a "Download & enable" button in
+Settings — no manual file building/placement, no computer required at all,
+unlike the very first version of this integration (which needed three
+specific files built/extracted and pushed into this repo by hand). See
+`docs/MODEL_SETUP.md`, Option A.
 
 Web Speech API remains the last-resort, explicitly-disclosed, non-offline
-fallback (see §9).
+fallback (see §9) — and, per real device testing, has a genuine
+architectural limitation of its own: it can't reliably share a microphone
+with this app's own recording pipeline (see §9's transcript-only mode
+note), whereas Whisper WASM never has that problem, since it processes
+audio through the same stream this app already captures.
 
 ## 5. Speaker identification
 
@@ -192,11 +200,10 @@ too: the standard `SpeechRecognition` API has no way to accept a custom
   what "global" meant, and no browser can replicate it (a page receiving
   keystrokes meant for other windows would be a serious security hole). See
   `hotkeys.js`.
-- **Whisper WASM is sensitive to the exact build you supply.** whisper.cpp's
-  exported JS function shapes have changed across releases; the worker
-  defensively handles the two shapes the maintainers have shipped, but a
-  very different build may need small adjustments — see the file header
-  comments in `whisperWasmWorker.js`.
+- **Whisper WASM's model download is a real, sizable one-time cost**
+  (75MB-466MB depending on model size), fetched from Hugging Face on first
+  use and cached in IndexedDB afterward. Slow on a poor connection, but it
+  only happens once per model size chosen.
 - **PDF export opens the browser's print dialog** instead of silently
   writing a file — there is no browser equivalent of Electron's
   `webContents.printToPDF`. The user picks "Save as PDF" as the print

@@ -77,6 +77,11 @@ function populateFields(settings) {
 
   qs('#setting-webspeech-enabled').checked = Boolean(settings.engines.webSpeech.enabled);
 
+  qs('#setting-whisper-model').value = settings.engines.whisperWasm.modelId;
+  qs('#whisper-wasm-status').textContent = settings.engines.whisperWasm.enabled
+    ? `Downloaded and enabled (${settings.engines.whisperWasm.modelId}).`
+    : 'Not downloaded yet.';
+
   qs('#setting-summary-engine').value = settings.summaryPreferences.preferredEngine;
   qs('#setting-ollama-port').value = settings.engines.ollama.port;
   qs('#setting-llamacpp-port').value = settings.engines.llamaCpp.port;
@@ -167,12 +172,59 @@ async function handleWebSpeechToggle(event) {
 
 function wireActionButtons() {
   qs('#btn-rescan-engines').addEventListener('click', () => refreshEngineDetection());
+  qs('#btn-download-whisper-model').addEventListener('click', () => downloadAndEnableWhisperWasm());
   qs('#btn-backup-now').addEventListener('click', () => runBackupNow());
   qs('#btn-restore-backup').addEventListener('click', () => confirmRestore());
   qs('#btn-export-settings').addEventListener('click', () => exportSettingsToFile());
   qs('#btn-import-settings').addEventListener('click', () => importSettingsFromFile());
   qs('#btn-view-logs').addEventListener('click', () => viewLogs());
   qs('#btn-reset-settings').addEventListener('click', () => confirmResetSettings());
+}
+
+/**
+ * Downloads (or loads from IndexedDB cache, if already fetched once) the
+ * selected Whisper model via the vendored library's own worker, then
+ * enables the engine once that succeeds. This worker instance is only used
+ * for this one-time priming step — actual transcription later spins up its
+ * own worker (see whisperWasm.js's provider).
+ */
+async function downloadAndEnableWhisperWasm() {
+  const modelId = qs('#setting-whisper-model').value;
+  const button = qs('#btn-download-whisper-model');
+  const statusEl = qs('#whisper-wasm-status');
+  const progressTrack = qs('#whisper-wasm-progress-track');
+  const progressFill = qs('#whisper-wasm-progress-fill');
+
+  button.disabled = true;
+  progressTrack.classList.remove('hidden');
+  progressFill.style.width = '0%';
+  statusEl.textContent = 'Downloading…';
+
+  const worker = new Worker(new URL('./transcription/whisperWasmWorker.js', import.meta.url), { type: 'module' });
+  try {
+    await new Promise((resolve, reject) => {
+      worker.onmessage = (event) => {
+        const data = event.data;
+        if (data.type === 'progress') progressFill.style.width = `${Math.round(data.progress)}%`;
+        else if (data.type === 'loaded') resolve();
+        else if (data.type === 'error') reject(new Error(data.message));
+      };
+      worker.onerror = (event) => reject(new Error(event.message || 'Worker error'));
+      worker.postMessage({ type: 'load', requestId: 1, modelId });
+    });
+
+    await persistSetting({ engines: { whisperWasm: { enabled: true, modelId } } });
+    statusEl.textContent = `Downloaded and enabled (${modelId}).`;
+    showToast('Whisper WASM model downloaded and enabled.', 'success');
+    await refreshEngineDetection();
+  } catch (error) {
+    statusEl.textContent = 'Not downloaded yet.';
+    showToast(`Download failed: ${error.message}`, 'error');
+  } finally {
+    progressTrack.classList.add('hidden');
+    worker.terminate();
+    button.disabled = false;
+  }
 }
 
 async function refreshEngineDetection() {

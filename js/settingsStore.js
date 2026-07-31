@@ -39,7 +39,7 @@ const DEFAULT_SETTINGS = {
     speakerChangeSilenceMs: 700,
   },
   engines: {
-    whisperWasm: { enabled: true },
+    whisperWasm: { enabled: false, modelId: 'base.en' },
     webSpeech: { enabled: false, acknowledgedDisclosure: false },
     ollama: { port: 11434 },
     llamaCpp: { port: 8080 },

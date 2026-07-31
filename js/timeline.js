@@ -30,8 +30,12 @@ async function loadTimeline(meeting) {
   renderBookmarkMarkers(meeting);
 
   if (!meeting.recording_path) {
-    clearCanvas();
     lastDecodedMeetingId = null;
+    if (meeting.segments.length > 0) {
+      drawNoAudioMessage();
+    } else {
+      clearCanvas();
+    }
     return;
   }
 
@@ -59,6 +63,21 @@ function clearCanvas() {
   const canvas = qs('#waveform-canvas');
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+}
+
+/** Shown instead of a blank waveform when a meeting has a transcript but no saved audio (transcript-only Web Speech mode) — a silently empty canvas would look like a bug rather than an explained trade-off. */
+function drawNoAudioMessage() {
+  const canvas = qs('#waveform-canvas');
+  const container = qs('#timeline-container');
+  canvas.width = container.clientWidth;
+  canvas.height = container.clientHeight;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = getComputedStyle(document.body).getPropertyValue('--color-ink-muted').trim() || '#888';
+  ctx.font = '13px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('No audio recorded — transcript-only meeting', canvas.width / 2, canvas.height / 2);
 }
 
 function drawWaveform(audioBuffer) {

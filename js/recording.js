@@ -23,9 +23,22 @@ import { qs, qsa, el, formatTimestamp, showToast, openModal } from './utils.js';
  *  - Hotkeys are now in-page (via hotkeys.js) rather than OS-global, so they
  *    only work while this tab is focused — see hotkeys.js for why that's an
  *    unavoidable browser limitation, not an oversight.
+ *
+ * TRANSCRIPT-ONLY MODE (Web Speech + microphone): confirmed via real device
+ * testing that this app's own getUserMedia stream (needed to actually save
+ * a recording) and Web Speech's separate, concurrent recognition session
+ * can't reliably share a single physical microphone on Android — Web
+ * Speech's session opens successfully but never receives real audio.
+ * Adjusting audio constraints didn't resolve it. The only reliable fix is
+ * architectural: when Web Speech is the active engine in microphone mode,
+ * this app's own audio capture is skipped entirely, so Web Speech is the
+ * *only* consumer of the microphone. The trade-off is explicit and
+ * disclosed in the UI: no audio is recorded/saved for that meeting — only
+ * the live transcript. See startTranscriptOnlyRecording() below.
  */
 
 const QUALITY_BITRATES = { low: 32000, standard: 96000, high: 192000 };
+const WEB_SPEECH_LABEL = 'Web Speech API (online, not private)';
 
 let audioEngine = null;
 let timerHandle = null;
@@ -35,6 +48,7 @@ let currentMeetingId = null;
 let recordingStartPerfMs = 0;
 let pausedAccumulatedMs = 0;
 let pausedAtPerfMs = 0;
+let transcriptOnlyMode = false;
 
 function els() {
   return {
@@ -124,84 +138,39 @@ export function initRecording() {
 function applyMeetingToToolbar(meeting) {
   const e = els();
   if (!meeting) return;
-  const hasFinalRecording = Boolean(meeting.recording_path);
-  e.modeButtons.forEach((btn) => { btn.disabled = hasFinalRecording || !isModeSupported(btn.dataset.mode); });
-  e.quality.disabled = hasFinalRecording;
+  // A meeting is "already done" whether it has a saved recording OR was
+  // finished in transcript-only mode (no audio, but status still becomes
+  // 'recorded' — see stopRecording()) — either way it shouldn't be
+  // re-recorded over.
+  const isFinished = Boolean(meeting.recording_path) || meeting.status === 'recorded';
+  e.modeButtons.forEach((btn) => { btn.disabled = isFinished || !isModeSupported(btn.dataset.mode); });
+  e.quality.disabled = isFinished;
   e.quality.value = meeting.quality || 'standard';
   setMode(meeting.recording_mode || 'microphone');
-  e.btnRecord.disabled = hasFinalRecording;
-  e.btnRecord.textContent = hasFinalRecording ? '● Recorded' : '● Record';
-  e.statusText.textContent = hasFinalRecording ? 'Recorded' : 'Ready';
+  e.btnRecord.disabled = isFinished;
+  e.btnRecord.textContent = isFinished ? '● Recorded' : '● Record';
+  e.statusText.textContent = isFinished ? (meeting.recording_path ? 'Recorded' : 'Transcript only') : 'Ready';
   e.timer.textContent = formatTimestamp(meeting.duration_ms || 0);
   e.sourceBanner.classList.add('hidden');
 }
 
 async function startRecording() {
-  const e = els();
   const meeting = store.get('currentMeeting');
   if (!meeting) return;
   const mode = currentMode();
+  const settings = store.get('settings');
+
+  // Detect which engine will actually run *before* deciding how to capture
+  // audio at all — this determines whether transcript-only mode applies.
+  const detectedEngineLabel = await transcriptionManager.detectAvailableEngine();
+  const willUseWebSpeech = detectedEngineLabel === WEB_SPEECH_LABEL;
+  transcriptOnlyMode = willUseWebSpeech && mode === 'microphone';
 
   try {
-    const session = await storage.createRecordingSession(meeting.id);
-    currentSessionId = session.sessionId;
-    currentMeetingId = meeting.id;
-    lastMasterChunkIndex = -1;
-
-    audioEngine = new AudioEngine();
-    audioEngine.addEventListener('level', ({ detail }) => {
-      e.levelMic.style.width = `${Math.round(detail.mic * 100)}%`;
-      e.levelSystem.style.width = `${Math.round(detail.system * 100)}%`;
-    });
-    audioEngine.addEventListener('master-chunk', async ({ detail }) => {
-      lastMasterChunkIndex = detail.index;
-      try {
-        const blob = new Blob([detail.arrayBuffer], { type: 'audio/webm' });
-        await storage.saveMasterChunk(currentSessionId, currentMeetingId, detail.index, blob);
-      } catch (error) {
-        showToast(`Failed to save recording chunk: ${error.message}`, 'error');
-      }
-    });
-    audioEngine.addEventListener('chunk-ready', ({ detail }) => {
-      transcriptionManager.submitAudioChunk(detail);
-    });
-
-    const settings = store.get('settings');
-    const quality = e.quality.value;
-
-    // Detect which engine will actually run *before* opening the mic — if
-    // it's Web Speech, skip audio-processing constraints on the recording
-    // stream (see audio.js's start() for why: they can starve Web Speech's
-    // separate, concurrent recognition session of real audio on Android).
-    const detectedEngineLabel = await transcriptionManager.detectAvailableEngine();
-    const willUseWebSpeech = detectedEngineLabel === 'Web Speech API (online, not private)';
-
-    // For system/mixed mode, this line is what triggers the browser's own
-    // native screen/window/tab picker — see audio.js's _captureSystemAudio.
-    // If the user cancels that picker, getDisplayMedia() rejects and we
-    // land in the catch block below like any other start failure.
-    await audioEngine.start(mode, {
-      speakerChangeSilenceMs: settings?.transcriptionPreferences?.speakerChangeSilenceMs ?? 700,
-      audioBitsPerSecond: QUALITY_BITRATES[quality] ?? QUALITY_BITRATES.standard,
-      minimalAudioConstraints: willUseWebSpeech,
-    });
-
-    await storage.updateMeeting(meeting.id, {
-      status: 'recording', quality, recording_mode: mode, started_at: Date.now(),
-    });
-
-    const engineLabel = await transcriptionManager.start(meeting.id, { language: settings?.language || 'en' });
-    updateEngineBanners(engineLabel);
-
-    recordingStartPerfMs = performance.now();
-    pausedAccumulatedMs = 0;
-    store.patch('recording', { status: 'recording', mode, startedAt: Date.now(), sessionId: currentSessionId });
-    updateToolbarForStatus('recording');
-    startTimerLoop();
-
-    if (mode === 'system' || mode === 'mixed') {
-      e.sourceBanner.classList.remove('hidden');
-      e.sourceBanner.textContent = 'Capturing system audio — in a browser this works reliably for a shared browser tab; whole-screen/window audio capture depends on your OS and may be silent (notably on macOS).';
+    if (transcriptOnlyMode) {
+      await startTranscriptOnlyRecording(meeting, settings);
+    } else {
+      await startFullRecording(meeting, mode, settings);
     }
   } catch (error) {
     showToast(`Could not start recording: ${error.message}`, 'error');
@@ -209,7 +178,97 @@ async function startRecording() {
   }
 }
 
+async function startFullRecording(meeting, mode, settings) {
+  const e = els();
+  const quality = e.quality.value;
+
+  const session = await storage.createRecordingSession(meeting.id);
+  currentSessionId = session.sessionId;
+  currentMeetingId = meeting.id;
+  lastMasterChunkIndex = -1;
+
+  audioEngine = new AudioEngine();
+  audioEngine.addEventListener('level', ({ detail }) => {
+    e.levelMic.style.width = `${Math.round(detail.mic * 100)}%`;
+    e.levelSystem.style.width = `${Math.round(detail.system * 100)}%`;
+  });
+  audioEngine.addEventListener('master-chunk', async ({ detail }) => {
+    lastMasterChunkIndex = detail.index;
+    try {
+      const blob = new Blob([detail.arrayBuffer], { type: 'audio/webm' });
+      await storage.saveMasterChunk(currentSessionId, currentMeetingId, detail.index, blob);
+    } catch (error) {
+      showToast(`Failed to save recording chunk: ${error.message}`, 'error');
+    }
+  });
+  audioEngine.addEventListener('chunk-ready', ({ detail }) => {
+    transcriptionManager.submitAudioChunk(detail);
+  });
+
+  // For system/mixed mode, this line is what triggers the browser's own
+  // native screen/window/tab picker — see audio.js's _captureSystemAudio.
+  // If the user cancels that picker, getDisplayMedia() rejects and we land
+  // in startRecording()'s catch block like any other start failure.
+  await audioEngine.start(mode, {
+    speakerChangeSilenceMs: settings?.transcriptionPreferences?.speakerChangeSilenceMs ?? 700,
+    audioBitsPerSecond: QUALITY_BITRATES[quality] ?? QUALITY_BITRATES.standard,
+  });
+
+  await storage.updateMeeting(meeting.id, {
+    status: 'recording', quality, recording_mode: mode, started_at: Date.now(),
+  });
+
+  const engineLabel = await transcriptionManager.start(meeting.id, { language: settings?.language || 'en' });
+  updateEngineBanners(engineLabel);
+
+  recordingStartPerfMs = performance.now();
+  pausedAccumulatedMs = 0;
+  store.patch('recording', { status: 'recording', mode, startedAt: Date.now(), sessionId: currentSessionId });
+  updateToolbarForStatus('recording');
+  startTimerLoop();
+
+  if (mode === 'system' || mode === 'mixed') {
+    e.sourceBanner.classList.remove('hidden');
+    e.sourceBanner.textContent = 'Capturing system audio — in a browser this works reliably for a shared browser tab; whole-screen/window audio capture depends on your OS and may be silent (notably on macOS).';
+  }
+}
+
+/** No AudioEngine at all here — Web Speech is the sole microphone consumer. See the file header for why this trade-off exists. */
+async function startTranscriptOnlyRecording(meeting, settings) {
+  const e = els();
+  currentMeetingId = meeting.id;
+  currentSessionId = null;
+
+  await storage.updateMeeting(meeting.id, {
+    status: 'recording', quality: 'standard', recording_mode: 'microphone', started_at: Date.now(),
+  });
+
+  const engineLabel = await transcriptionManager.start(meeting.id, { language: settings?.language || 'en' });
+  updateEngineBanners(engineLabel);
+
+  recordingStartPerfMs = performance.now();
+  pausedAccumulatedMs = 0;
+  store.patch('recording', { status: 'recording', mode: 'microphone', startedAt: Date.now(), sessionId: null });
+  updateToolbarForStatus('recording');
+  startTimerLoop();
+
+  // No AudioEngine running, so the level meters have nothing to show.
+  e.levelMic.style.width = '0%';
+  e.levelSystem.style.width = '0%';
+  e.sourceBanner.classList.remove('hidden');
+  e.sourceBanner.textContent = 'Transcript-only mode: on this device, Web Speech needs sole access to your microphone, so no audio is being recorded for this meeting — only the live transcript.';
+}
+
 function pauseRecording() {
+  if (transcriptOnlyMode) {
+    transcriptionManager.stop();
+    pausedAtPerfMs = performance.now();
+    store.patch('recording', { status: 'paused' });
+    updateToolbarForStatus('paused');
+    stopTimerLoop();
+    return;
+  }
+
   audioEngine?.pause();
   pausedAtPerfMs = performance.now();
   storage.setSessionStatus(currentSessionId, lastMasterChunkIndex, 'paused');
@@ -218,7 +277,18 @@ function pauseRecording() {
   stopTimerLoop();
 }
 
-function resumeRecording() {
+async function resumeRecording() {
+  if (transcriptOnlyMode) {
+    const settings = store.get('settings');
+    pausedAccumulatedMs += performance.now() - pausedAtPerfMs;
+    const engineLabel = await transcriptionManager.start(currentMeetingId, { language: settings?.language || 'en' });
+    updateEngineBanners(engineLabel);
+    store.patch('recording', { status: 'recording' });
+    updateToolbarForStatus('recording');
+    startTimerLoop();
+    return;
+  }
+
   audioEngine?.resume();
   pausedAccumulatedMs += performance.now() - pausedAtPerfMs;
   storage.setSessionStatus(currentSessionId, lastMasterChunkIndex, 'recording');
@@ -238,18 +308,24 @@ async function stopRecording() {
   e.statusText.textContent = 'Finalizing…';
 
   try {
-    await audioEngine?.stop();
-    await transcriptionManager.stop();
-    await storage.finalizeRecording(sessionId, meetingId, durationMs);
+    if (transcriptOnlyMode) {
+      await transcriptionManager.stop();
+      await storage.updateMeeting(meetingId, { duration_ms: durationMs, status: 'recorded' });
+    } else {
+      await audioEngine?.stop();
+      await transcriptionManager.stop();
+      await storage.finalizeRecording(sessionId, meetingId, durationMs);
+    }
     const refreshed = await storage.getMeeting(meetingId);
     store.set('currentMeeting', refreshed);
-    showToast('Recording saved.', 'success');
+    showToast(transcriptOnlyMode ? 'Transcript saved (no audio recording in this mode).' : 'Recording saved.', 'success');
   } catch (error) {
     showToast(`Error finalizing recording: ${error.message}`, 'error');
   } finally {
     audioEngine = null;
     currentSessionId = null;
     currentMeetingId = null;
+    transcriptOnlyMode = false;
     store.patch('recording', { status: 'idle', sessionId: null });
     updateToolbarForStatus('idle');
   }

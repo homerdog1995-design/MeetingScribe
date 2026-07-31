@@ -93,7 +93,7 @@ function buildMeetingCard(meeting) {
   const meta = el('div', { class: 'meeting-card-meta' }, [
     el('span', {}, formatRelativeDate(meeting.updated_at)),
     el('span', {}, formatDuration(meeting.duration_ms)),
-    el('span', {}, meeting.status === 'recording' ? 'Recording in progress' : meeting.recording_path ? 'Recorded' : 'Not yet recorded'),
+    el('span', {}, meeting.status === 'recording' ? 'Recording in progress' : meeting.recording_path ? 'Recorded' : meeting.preview ? 'Transcript only (no audio)' : 'Not yet recorded'),
   ]);
   card.appendChild(meta);
 

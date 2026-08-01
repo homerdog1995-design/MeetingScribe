@@ -41,6 +41,7 @@ export class WhisperWasmProvider extends TranscriptionProvider {
     this._language = 'en';
     this._modelId = 'base.en';
     this._queue = Promise.resolve();
+    this._consecutiveFailures = 0;
   }
 
   get label() { return 'Whisper WASM (on-device)'; }
@@ -85,6 +86,7 @@ export class WhisperWasmProvider extends TranscriptionProvider {
     try {
       const samples = decodeWavPcm16ToFloat32(wavBuffer);
       const segments = await this._call('transcribe', { samples, language: this._language }, [samples.buffer]);
+      this._consecutiveFailures = 0;
       for (const segment of segments) {
         this.dispatchEvent(new CustomEvent('segment', {
           detail: {
@@ -97,7 +99,31 @@ export class WhisperWasmProvider extends TranscriptionProvider {
         }));
       }
     } catch (error) {
-      logger.error('whisperWasm', 'Chunk transcription failed', { message: error.message });
+      this._consecutiveFailures += 1;
+      logger.error('whisperWasm', 'Chunk transcription failed', { message: error.message, consecutiveFailures: this._consecutiveFailures });
+
+      const REPEATED_FAILURE_THRESHOLD = 2;
+      if (this._consecutiveFailures >= REPEATED_FAILURE_THRESHOLD) {
+        // Failing this consistently means retrying indefinitely has no
+        // realistic path to success this session — self-disable so future
+        // recordings fall back to Web Speech automatically instead of
+        // requiring the user to find and uncheck this in Settings, and
+        // stop trying to recover for the rest of *this* recording (a
+        // recording with zero working transcription for its whole
+        // duration is a clearer outcome than one that silently retries
+        // forever and produces nothing either way).
+        await settingsStore.set({ engines: { whisperWasm: { active: false } } });
+        this.dispatchEvent(new CustomEvent('error', {
+          detail: {
+            message: 'Whisper WASM failed repeatedly and has been turned off automatically. Future recordings will use Web Speech instead — see Settings → AI Engines for details.',
+            fatal: true,
+          },
+        }));
+        this._worker?.terminate();
+        this._worker = null;
+        return;
+      }
+
       this.dispatchEvent(new CustomEvent('error', { detail: { message: `Skipped one chunk after an engine error: ${error.message}`, fatal: false } }));
       // The engine's internal state can't be trusted after any failure here
       // (see file header) — replace the whole worker so the *next* chunk

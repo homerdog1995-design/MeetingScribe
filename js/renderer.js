@@ -58,7 +58,22 @@ function wireNavigation() {
   store.subscribe('currentView', (view) => {
     qsa('.view').forEach((section) => section.classList.toggle('active', section.id === `view-${view}`));
     qsa('.nav-item').forEach((item) => item.classList.toggle('active', item.dataset.view === view));
+    closeSidebar();
   });
+
+  qs('#btn-open-sidebar').addEventListener('click', () => openSidebar());
+  qs('#btn-close-sidebar').addEventListener('click', () => closeSidebar());
+  qs('#sidebar-backdrop').addEventListener('click', () => closeSidebar());
+}
+
+function openSidebar() {
+  qs('#sidebar').classList.add('open');
+  qs('#sidebar-backdrop').classList.add('open');
+}
+
+function closeSidebar() {
+  qs('#sidebar').classList.remove('open');
+  qs('#sidebar-backdrop').classList.remove('open');
 }
 
 function wireBackToLibrary() {

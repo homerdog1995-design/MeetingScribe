@@ -20,11 +20,14 @@
 
 <div id="app">
 
+  <div id="sidebar-backdrop"></div>
+
   <!-- ============================== SIDEBAR ============================== -->
   <aside id="sidebar" aria-label="Primary navigation">
     <div class="brand">
       <span class="brand-mark" aria-hidden="true">◆</span>
       <span class="brand-name">MeetingScribe</span>
+      <button id="btn-close-sidebar" class="sidebar-close" type="button" aria-label="Close menu">✕</button>
     </div>
 
     <button id="btn-new-meeting" class="btn btn-primary btn-block" type="button">
@@ -52,6 +55,7 @@
 
   <!-- ============================== MAIN CONTENT ============================== -->
   <main id="main-content">
+    <button id="btn-open-sidebar" class="mobile-menu-toggle" type="button" aria-label="Open menu">☰</button>
 
     <!-- ---------- LIBRARY VIEW ---------- -->
     <section id="view-library" class="view active" aria-label="Meeting library">

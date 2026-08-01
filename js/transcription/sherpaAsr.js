@@ -96,6 +96,7 @@ export class SherpaAsrProvider extends TranscriptionProvider {
     try {
       const { results } = await this._call('feed', { samples }, [samples.buffer]);
       this._consecutiveFailures = 0;
+      if (!Array.isArray(results) || results.length === 0) return;
 
       // Each result is one complete, VAD-delimited utterance that Whisper
       // decoded as a whole. Their timestamps are reconstructed by working
@@ -174,7 +175,7 @@ export class SherpaAsrProvider extends TranscriptionProvider {
     this._pending.delete(data.requestId);
     if (data.type === 'error') pending.reject(new Error(data.message));
     else if (data.type === 'loaded') pending.resolve();
-    else if (data.type === 'result') pending.resolve({ text: data.text, isEndpoint: data.isEndpoint });
+    else if (data.type === 'result') pending.resolve({ results: data.results ?? [], speechActive: data.speechActive });
     else if (data.type === 'ok') pending.resolve();
   }
 }

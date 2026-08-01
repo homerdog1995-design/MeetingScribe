@@ -25,15 +25,24 @@ export class SherpaAsrProvider extends TranscriptionProvider {
     this._worker = null;
     this._requestSeq = 0;
     this._pending = new Map();
-    this._streamElapsedMs = 0; // total audio fed so far, i.e. this session's absolute timeline
+    this._streamElapsedMs = 0; // total audio fed to this engine so far
+    this._timelineOffsetMs = 0; // how far into the recording this engine started, so its timestamps line up with the recorded audio
     this._queue = Promise.resolve();
     this._consecutiveFailures = 0;
     this._pendingFrameCount = 0;
     this._pendingSegments = []; // completed VAD segments awaiting dispatch
     this._givenUp = false; // set once transcription has failed permanently this session, so remaining frames are ignored silently
+    this._loadedModelId = null; // which model the worker actually ended up loading (may differ from the requested one after a fallback)
   }
 
-  get label() { return 'Whisper (on-device)'; }
+  get label() {
+    // Reflects the model actually loaded, not the one requested — if a
+    // base.en download failed and it fell back, the badge must say so
+    // rather than claiming the higher-accuracy model is running.
+    if (this._loadedModelId === 'base.en') return 'Whisper base.en (on-device, higher accuracy)';
+    if (this._loadedModelId === 'tiny.en') return 'Whisper tiny.en (on-device)';
+    return 'Whisper (on-device)';
+  }
 
   async isAvailable() {
     const settings = await settingsStore.get();
@@ -50,7 +59,19 @@ export class SherpaAsrProvider extends TranscriptionProvider {
     }
   }
 
-  async start() {
+  /**
+   * @param {{recordingStartedAtPerfMs?: number}} [options] - when audio
+   * capture actually began. Loading the model takes real time, so this
+   * provider starts well after the recording does; without this offset
+   * every transcript timestamp would be shifted earlier than the audio it
+   * describes, which silently misaligns diarization (whose timings come
+   * from the recorded audio, not from here) and transcript playback
+   * seeking.
+   */
+  async start({ recordingStartedAtPerfMs } = {}) {
+    this._timelineOffsetMs = recordingStartedAtPerfMs != null
+      ? Math.max(0, performance.now() - recordingStartedAtPerfMs)
+      : 0;
     this._streamElapsedMs = 0;
     this._pendingSegments = [];
     this._givenUp = false;
@@ -114,7 +135,7 @@ export class SherpaAsrProvider extends TranscriptionProvider {
         const endMs = cursorMs;
         const startMs = Math.max(0, endMs - result.durationMs);
         cursorMs = startMs;
-        this._pendingSegments.unshift({ text: result.text, startMs, endMs });
+        this._pendingSegments.unshift({ text: result.text, startMs: startMs + this._timelineOffsetMs, endMs: endMs + this._timelineOffsetMs });
       }
 
       while (this._pendingSegments.length) {
@@ -181,7 +202,15 @@ export class SherpaAsrProvider extends TranscriptionProvider {
   }
 
   _handleWorkerMessage(data) {
-    if (data.type === 'progress') return;
+    if (data.type === 'progress') {
+      // Downloading the optional higher-accuracy model is slow enough
+      // (~160MB) that silence looks like a hang — forward it so the UI can
+      // show real feedback.
+      if (data.stage === 'model') {
+        this.dispatchEvent(new CustomEvent('model-progress', { detail: { done: data.done, total: data.total } }));
+      }
+      return;
+    }
     if (data.type === 'model-fallback') {
       logger.warn('sherpaAsr', 'Higher-accuracy model unavailable, using bundled model', { message: data.message });
       this.dispatchEvent(new CustomEvent('error', { detail: { message: 'The higher-accuracy model could not be loaded, so the standard model is being used instead.', fatal: false } }));
@@ -191,7 +220,7 @@ export class SherpaAsrProvider extends TranscriptionProvider {
     if (!pending) return;
     this._pending.delete(data.requestId);
     if (data.type === 'error') pending.reject(new Error(data.message));
-    else if (data.type === 'loaded') pending.resolve();
+    else if (data.type === 'loaded') { this._loadedModelId = data.modelId ?? null; pending.resolve(); }
     else if (data.type === 'result') pending.resolve({ results: data.results ?? [], speechActive: data.speechActive });
     else if (data.type === 'ok') pending.resolve();
   }

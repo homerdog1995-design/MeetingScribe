@@ -1,5 +1,6 @@
 'use strict';
 
+import { transcriptionManager } from './transcription.js';
 import { store } from './state.js';
 import { storage } from './storage.js';
 import { settingsStore } from './settingsStore.js';
@@ -117,7 +118,20 @@ function wireFieldListeners() {
 
   qs('#setting-webspeech-enabled').addEventListener('change', (e) => handleWebSpeechToggle(e));
   qs('#setting-sherpa-asr-enabled').addEventListener('change', (e) => persistSetting({ engines: { sherpaAsr: { enabled: e.target.checked } } }));
-  qs('#setting-whisper-model').addEventListener('change', (e) => persistSetting({ engines: { sherpaAsr: { modelId: e.target.value } } }));
+  qs('#setting-whisper-model').addEventListener('change', (e) => {
+    persistSetting({ engines: { sherpaAsr: { modelId: e.target.value } } });
+    qs('#active-model-status').textContent = 'Saved — takes effect on your next recording.';
+  });
+
+  // The engine reports which model it actually loaded (which can differ
+  // from the one selected, if a download failed and it fell back), so this
+  // shows reality rather than intent.
+  transcriptionManager.addEventListener('engine-changed', ({ detail }) => {
+    qs('#active-model-status').textContent = detail.label || 'No transcription engine active.';
+  });
+  transcriptionManager.addEventListener('model-progress', ({ detail }) => {
+    qs('#active-model-status').textContent = `Downloading higher-accuracy model… (${detail.done} of ${detail.total} files)`;
+  });
 
   qs('#setting-summary-engine').addEventListener('change', (e) => persistSetting({ summaryPreferences: { preferredEngine: e.target.value } }));
   qs('#setting-ollama-port').addEventListener('change', (e) => persistSetting({ engines: { ollama: { port: Number(e.target.value) } } }));

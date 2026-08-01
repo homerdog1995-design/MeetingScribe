@@ -121,8 +121,9 @@ async function runDiarization() {
       return;
     }
 
-    status.textContent = 'Analyzing voices — this can take a while for longer recordings…';
-    const turns = await diarizeRecording(blob);
+    status.textContent = 'Analysing voices — this can take a while for longer recordings…';
+    const requestedCount = Number(qs('#diarization-speaker-count').value);
+    const turns = await diarizeRecording(blob, requestedCount > 0 ? { numSpeakers: requestedCount } : {});
     if (!turns.length) {
       status.textContent = 'No distinct speakers were detected.';
       return;

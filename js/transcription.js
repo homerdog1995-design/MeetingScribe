@@ -24,6 +24,13 @@ class TranscriptionManager extends EventTarget {
     this._onError = (event) => this.dispatchEvent(new CustomEvent('provider-error', { detail: event.detail }));
   }
 
+  /** Re-emits a provider's model-download progress so the UI can show feedback without knowing which engine is active. */
+  _forwardModelProgress(provider) {
+    provider.addEventListener('model-progress', ({ detail }) => {
+      this.dispatchEvent(new CustomEvent('model-progress', { detail }));
+    });
+  }
+
   get activeEngineLabel() {
     return this._activeLabel;
   }
@@ -58,7 +65,7 @@ class TranscriptionManager extends EventTarget {
     return null;
   }
 
-  async start(meetingId, { language = 'en' } = {}) {
+  async start(meetingId, { language = 'en', recordingStartedAtPerfMs } = {}) {
     await this.stop();
 
     for (const ProviderClass of PROVIDER_CHAIN) {
@@ -74,7 +81,8 @@ class TranscriptionManager extends EventTarget {
       try {
         provider.addEventListener('segment', this._onSegment);
         provider.addEventListener('error', this._onError);
-        await provider.start({ meetingId, language });
+        this._forwardModelProgress(provider);
+        await provider.start({ meetingId, language, recordingStartedAtPerfMs });
         this._activeProvider = provider;
         this._activeLabel = provider.label;
         this.dispatchEvent(new CustomEvent('engine-changed', { detail: { label: this._activeLabel } }));

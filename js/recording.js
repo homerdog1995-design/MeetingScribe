@@ -221,15 +221,23 @@ async function startFullRecording(meeting, mode, settings) {
   await audioEngine.start(mode, {
     audioBitsPerSecond: QUALITY_BITRATES[quality] ?? QUALITY_BITRATES.standard,
   });
+  // Captured immediately after capture begins, so the transcription engine
+  // can offset its own timestamps to match the recording's clock — model
+  // loading below takes real time, and without this every transcript
+  // timestamp would sit earlier than the audio it describes.
+  const audioStartedAtPerfMs = performance.now();
 
   await storage.updateMeeting(meeting.id, {
     status: 'recording', quality, recording_mode: mode, started_at: Date.now(),
   });
 
-  const engineLabel = await transcriptionManager.start(meeting.id, { language: settings?.language || 'en' });
+  const engineLabel = await transcriptionManager.start(meeting.id, {
+    language: settings?.language || 'en',
+    recordingStartedAtPerfMs: audioStartedAtPerfMs,
+  });
   updateEngineBanners(engineLabel);
 
-  recordingStartPerfMs = performance.now();
+  recordingStartPerfMs = audioStartedAtPerfMs;
   pausedAccumulatedMs = 0;
   store.patch('recording', { status: 'recording', mode, startedAt: Date.now(), sessionId: currentSessionId });
   updateToolbarForStatus('recording');

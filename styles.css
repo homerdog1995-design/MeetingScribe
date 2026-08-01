@@ -569,3 +569,6 @@ body[data-theme="dark"] .transcript-editor .segment-text.highlighted { backgroun
   .export-format-list { grid-template-columns: repeat(2, 1fr); }
   .storage-stats { flex-wrap: wrap; gap: 12px; }
 }
+
+.speakers-count-field { display: flex; align-items: center; gap: 8px; font-size: calc(12.5px * var(--font-scale)); color: var(--color-ink-muted); }
+.speakers-count-field select { padding: 5px 8px; }

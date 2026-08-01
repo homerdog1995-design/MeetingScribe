@@ -195,9 +195,29 @@
         <!-- Speakers -->
         <div id="panel-speakers" class="panel">
           <div class="speakers-toolbar">
+            <label class="speakers-count-field">
+              <span>Speakers in this meeting</span>
+              <select id="diarization-speaker-count">
+                <option value="-1">Detect automatically</option>
+                <option value="2">2</option>
+                <option value="3">3</option>
+                <option value="4">4</option>
+                <option value="5">5</option>
+                <option value="6">6</option>
+                <option value="7">7</option>
+                <option value="8">8</option>
+              </select>
+            </label>
             <button id="btn-detect-speakers" class="btn btn-primary btn-small" type="button">Detect speakers (on-device AI)</button>
             <span id="diarization-status" class="settings-help"></span>
           </div>
+          <p class="settings-help">
+            If you know how many people were talking, setting it here is
+            usually far more reliable than automatic detection — automatic
+            mode has to guess the number of distinct voices from the audio
+            alone, and tends to split one person into several when there's
+            background noise or varied speaking volume.
+          </p>
           <div id="speaker-list" class="speaker-list"></div>
         </div>
 
@@ -326,10 +346,16 @@
             The higher-accuracy model is noticeably better at understanding
             speech, but it's a substantial one-time download on top of what's
             already bundled (about 260MB in total), and each phrase takes
-            longer to transcribe. It's downloaded the first time you record
-            after selecting it, then cached. If it can't be downloaded, the
-            standard model is used instead rather than failing.
+            longer to transcribe. There's no separate download step — it's
+            fetched automatically the first time you start a recording after
+            selecting it, then cached for offline use. If it can't be
+            downloaded, the standard model is used instead rather than
+            failing.
           </p>
+          <div class="settings-row">
+            <span>Currently active</span>
+            <span id="active-model-status" class="settings-help">Not started yet — begin a recording to load the model.</span>
+          </div>
 
           <h3>Web Speech API <span class="badge badge-warning">Not offline</span></h3>
           <p class="settings-help">Sends microphone audio to Google's servers. Off by default.</p>

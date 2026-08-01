@@ -78,9 +78,12 @@ function populateFields(settings) {
   qs('#setting-webspeech-enabled').checked = Boolean(settings.engines.webSpeech.enabled);
 
   qs('#setting-whisper-model').value = settings.engines.whisperWasm.modelId;
-  qs('#whisper-wasm-status').textContent = settings.engines.whisperWasm.enabled
-    ? `Downloaded and enabled (${settings.engines.whisperWasm.modelId}).`
-    : 'Not downloaded yet.';
+  qs('#setting-whisper-enabled').checked = Boolean(settings.engines.whisperWasm.active);
+  qs('#whisper-wasm-status').textContent = !settings.engines.whisperWasm.enabled
+    ? 'Not downloaded yet.'
+    : settings.engines.whisperWasm.active
+      ? `Downloaded and active (${settings.engines.whisperWasm.modelId}).`
+      : `Downloaded (${settings.engines.whisperWasm.modelId}) but turned off below.`;
 
   qs('#setting-summary-engine').value = settings.summaryPreferences.preferredEngine;
   qs('#setting-ollama-port').value = settings.engines.ollama.port;
@@ -118,6 +121,7 @@ function wireFieldListeners() {
   qs('#setting-speaker-silence-ms').addEventListener('change', (e) => persistSetting({ transcriptionPreferences: { speakerChangeSilenceMs: Number(e.target.value) } }));
 
   qs('#setting-webspeech-enabled').addEventListener('change', (e) => handleWebSpeechToggle(e));
+  qs('#setting-whisper-enabled').addEventListener('change', (e) => persistSetting({ engines: { whisperWasm: { active: e.target.checked } } }).then(() => populateFields(store.get('settings'))));
 
   qs('#setting-summary-engine').addEventListener('change', (e) => persistSetting({ summaryPreferences: { preferredEngine: e.target.value } }));
   qs('#setting-ollama-port').addEventListener('change', (e) => persistSetting({ engines: { ollama: { port: Number(e.target.value) } } }));
@@ -213,7 +217,7 @@ async function downloadAndEnableWhisperWasm() {
       worker.postMessage({ type: 'load', requestId: 1, modelId });
     });
 
-    await persistSetting({ engines: { whisperWasm: { enabled: true, modelId } } });
+    await persistSetting({ engines: { whisperWasm: { enabled: true, modelId, active: true } } });
     statusEl.textContent = `Downloaded and enabled (${modelId}).`;
     showToast('Whisper WASM model downloaded and enabled.', 'success');
     await refreshEngineDetection();

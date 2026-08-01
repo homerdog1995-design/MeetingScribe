@@ -41,7 +41,7 @@ export async function detectAll() {
     isDiarizationAvailable(),
   ]);
   return {
-    whisperWasm: { available: Boolean(settings.engines.whisperWasm.enabled), modelId: settings.engines.whisperWasm.modelId },
+    whisperWasm: { available: Boolean(settings.engines.whisperWasm.enabled && settings.engines.whisperWasm.active), modelId: settings.engines.whisperWasm.modelId },
     webSpeech,
     ollama: llm.ollama,
     llamaCpp: llm.llamaCpp,

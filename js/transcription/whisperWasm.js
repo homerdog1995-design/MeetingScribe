@@ -47,7 +47,7 @@ export class WhisperWasmProvider extends TranscriptionProvider {
 
   async isAvailable() {
     const settings = await settingsStore.get();
-    return Boolean(settings.engines.whisperWasm.enabled);
+    return Boolean(settings.engines.whisperWasm.enabled && settings.engines.whisperWasm.active);
   }
 
   async start({ language }) {

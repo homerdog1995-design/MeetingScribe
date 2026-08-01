@@ -39,8 +39,9 @@ export class SherpaAsrProvider extends TranscriptionProvider {
     // Reflects the model actually loaded, not the one requested — if a
     // base.en download failed and it fell back, the badge must say so
     // rather than claiming the higher-accuracy model is running.
-    if (this._loadedModelId === 'base.en') return 'Whisper base.en (on-device, higher accuracy)';
-    if (this._loadedModelId === 'tiny.en') return 'Whisper tiny.en (on-device)';
+    if (this._loadedModelId === 'base-multilingual') return 'Whisper base multilingual (on-device, better with accents)';
+    if (this._loadedModelId === 'base.en') return 'Whisper base.en (on-device, US English)';
+    if (this._loadedModelId === 'tiny.en') return 'Whisper tiny.en (on-device, standard)';
     return 'Whisper (on-device)';
   }
 

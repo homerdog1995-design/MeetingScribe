@@ -339,7 +339,8 @@
             <span>Model</span>
             <select id="setting-whisper-model">
               <option value="tiny.en">Standard — fastest, already included</option>
-              <option value="base.en">Higher accuracy — extra 160MB download, slower</option>
+              <option value="base-multilingual">Higher accuracy, better with accents — extra 160MB</option>
+              <option value="base.en">Higher accuracy, US English — extra 160MB</option>
             </select>
           </label>
           <p class="settings-help">
@@ -351,6 +352,14 @@
             selecting it, then cached for offline use. If it can't be
             downloaded, the standard model is used instead rather than
             failing.
+          </p>
+          <p class="settings-help">
+            <strong>If you don't speak with a US accent, choose the
+            multilingual option.</strong> It's the same size and speed as the
+            US English one, but was trained on far more varied accents, so it
+            handles Australian, British, Irish, Indian and other English
+            accents noticeably better. The US English model is only worth
+            choosing if everyone in your meetings has an American accent.
           </p>
           <div class="settings-row">
             <span>Currently active</span>

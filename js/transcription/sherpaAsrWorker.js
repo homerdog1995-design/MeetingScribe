@@ -39,7 +39,6 @@
 // not the site root — fetch()/importScripts() inside a Worker resolve
 // against the worker's own script URL, not the page that created it.
 const ASSET_BASE = '../../assets/speech-recognition/';
-const BASE_EN_ASSET_BASE = '../../assets/whisper-base-en/';
 const DATA_PARTS = ['sherpa-onnx-wasm-main-vad-asr.data.part00', 'sherpa-onnx-wasm-main-vad-asr.data.part01'];
 const SAMPLE_RATE = 16000;
 
@@ -57,10 +56,26 @@ const SAMPLE_RATE = 16000;
  * total rather than 103MB. It's cached afterward and only downloaded if
  * the user opts in.
  */
-const BASE_EN_FILES = {
-  encoder: { name: 'base.en-encoder.int8.onnx', parts: ['base.en-encoder.int8.onnx'] },
-  decoder: { name: 'base.en-decoder.int8.onnx', parts: ['base.en-decoder.int8.onnx.part00', 'base.en-decoder.int8.onnx.part01'] },
-  tokens: { name: 'base.en-tokens.txt', parts: ['base.en-tokens.txt'] },
+const RUNTIME_MODELS = {
+  'base.en': {
+    assetBase: '../../assets/whisper-base-en/',
+    encoder: { name: 'base.en-encoder.int8.onnx', parts: ['base.en-encoder.int8.onnx'] },
+    decoder: { name: 'base.en-decoder.int8.onnx', parts: ['base.en-decoder.int8.onnx.part00', 'base.en-decoder.int8.onnx.part01'] },
+    tokens: { name: 'base.en-tokens.txt', parts: ['base.en-tokens.txt'] },
+    language: '',
+  },
+  'base-multilingual': {
+    assetBase: '../../assets/whisper-base-multilingual/',
+    encoder: { name: 'base-encoder.int8.onnx', parts: ['base-encoder.int8.onnx'] },
+    decoder: { name: 'base-decoder.int8.onnx', parts: ['base-decoder.int8.onnx.part00', 'base-decoder.int8.onnx.part01'] },
+    tokens: { name: 'base-tokens.txt', parts: ['base-tokens.txt'] },
+    // Multilingual checkpoints need the language stated explicitly,
+    // otherwise they spend effort detecting it and can mis-detect on short
+    // utterances. These models were trained on far more accent diversity
+    // than the .en variants, which is why they handle non-American English
+    // (e.g. Australian) noticeably better despite being the same size.
+    language: 'en',
+  },
 };
 
 let recognizer = null;
@@ -92,13 +107,15 @@ function waitForRuntime() {
 }
 
 /** Fetches the vendored base.en model parts and writes them into the WASM virtual filesystem, so the recognizer can reference them by path exactly like the bundled tiny.en files. */
-async function installBaseEnModel(onProgress) {
+async function installRuntimeModel(modelId, onProgress) {
+  const model = RUNTIME_MODELS[modelId];
   let completed = 0;
-  const totalFiles = Object.keys(BASE_EN_FILES).length;
-  for (const spec of Object.values(BASE_EN_FILES)) {
+  const specs = [model.encoder, model.decoder, model.tokens];
+  const totalFiles = specs.length;
+  for (const spec of specs) {
     const buffers = [];
     for (const partName of spec.parts) {
-      const response = await fetch(`${BASE_EN_ASSET_BASE}${partName}`);
+      const response = await fetch(`${model.assetBase}${partName}`);
       if (!response.ok) throw new Error(`Failed to fetch ${partName} (HTTP ${response.status})`);
       buffers.push(new Uint8Array(await response.arrayBuffer()));
     }
@@ -115,13 +132,14 @@ async function installBaseEnModel(onProgress) {
 /**
  * tiny.en (and tokens.txt) are bundled in the WASM .data package at the
  * virtual filesystem root; base.en is installed at runtime by
- * installBaseEnModel() above, so both end up addressable the same way.
+ * installRuntimeModel() above, so both end up addressable the same way.
  */
 function createWhisperRecognizer(modelId) {
-  const whisper = modelId === 'base.en'
-    ? { encoder: './base.en-encoder.int8.onnx', decoder: './base.en-decoder.int8.onnx' }
+  const model = RUNTIME_MODELS[modelId];
+  const whisper = model
+    ? { encoder: `./${model.encoder.name}`, decoder: `./${model.decoder.name}`, language: model.language, task: 'transcribe' }
     : { encoder: './whisper-encoder.onnx', decoder: './whisper-decoder.onnx' };
-  const tokens = modelId === 'base.en' ? './base.en-tokens.txt' : './tokens.txt';
+  const tokens = model ? `./${model.tokens.name}` : './tokens.txt';
 
   return new OfflineRecognizer({
     modelConfig: { debug: 0, tokens, whisper },
@@ -147,10 +165,11 @@ self.onmessage = async (event) => {
       );
       await runtimeReady;
 
-      const modelId = event.data.modelId === 'base.en' ? 'base.en' : 'tiny.en';
-      if (modelId === 'base.en') {
+      const requestedModelId = event.data.modelId;
+      const modelId = RUNTIME_MODELS[requestedModelId] ? requestedModelId : 'tiny.en';
+      if (RUNTIME_MODELS[modelId]) {
         try {
-          await installBaseEnModel((done, total) => {
+          await installRuntimeModel(modelId, (done, total) => {
             self.postMessage({ type: 'progress', requestId, stage: 'model', done, total });
           });
         } catch (installError) {
@@ -159,14 +178,70 @@ self.onmessage = async (event) => {
           // higher-accuracy model they opted into.
           self.postMessage({ type: 'model-fallback', requestId, message: installError.message });
           recognizer = createWhisperRecognizer('tiny.en');
-          vad = createVad(self.Module);
+          vad = createVad(self.Module, {
+        sileroVad: {
+          model: './silero_vad.onnx',
+          // Raised from the 0.50 default: a higher bar for "this is
+          // speech" makes the VAD less likely to trigger on background
+          // noise, which otherwise gets fed to Whisper as if it were
+          // speech and produces junk text.
+          threshold: 0.60,
+          // Raised from 0.50s. At a normal conversational pace people
+          // pause briefly mid-sentence; ending a segment that early
+          // chops sentences into fragments and denies Whisper the
+          // surrounding context it needs to transcribe accurately.
+          minSilenceDuration: 0.80,
+          // Raised from 0.25s so brief noises (a cough, a door, a chair)
+          // aren't treated as utterances in their own right.
+          minSpeechDuration: 0.35,
+          // Whisper is trained on 30s windows, so allowing longer
+          // segments than the 20s default costs nothing and avoids
+          // arbitrarily cutting long uninterrupted speech.
+          maxSpeechDuration: 28,
+          windowSize: 512,
+        },
+        tenVad: { model: '', threshold: 0.50, minSilenceDuration: 0.50, minSpeechDuration: 0.25, maxSpeechDuration: 20, windowSize: 256 },
+        sampleRate: SAMPLE_RATE,
+        numThreads: 1,
+        provider: 'cpu',
+        debug: 0,
+        bufferSizeInSeconds: 30,
+      });
           circularBuffer = new CircularBuffer(30 * SAMPLE_RATE, self.Module);
           self.postMessage({ type: 'loaded', requestId, sampleRate: SAMPLE_RATE, modelId: 'tiny.en' });
           return;
         }
       }
       recognizer = createWhisperRecognizer(modelId);
-      vad = createVad(self.Module);
+      vad = createVad(self.Module, {
+        sileroVad: {
+          model: './silero_vad.onnx',
+          // Raised from the 0.50 default: a higher bar for "this is
+          // speech" makes the VAD less likely to trigger on background
+          // noise, which otherwise gets fed to Whisper as if it were
+          // speech and produces junk text.
+          threshold: 0.60,
+          // Raised from 0.50s. At a normal conversational pace people
+          // pause briefly mid-sentence; ending a segment that early
+          // chops sentences into fragments and denies Whisper the
+          // surrounding context it needs to transcribe accurately.
+          minSilenceDuration: 0.80,
+          // Raised from 0.25s so brief noises (a cough, a door, a chair)
+          // aren't treated as utterances in their own right.
+          minSpeechDuration: 0.35,
+          // Whisper is trained on 30s windows, so allowing longer
+          // segments than the 20s default costs nothing and avoids
+          // arbitrarily cutting long uninterrupted speech.
+          maxSpeechDuration: 28,
+          windowSize: 512,
+        },
+        tenVad: { model: '', threshold: 0.50, minSilenceDuration: 0.50, minSpeechDuration: 0.25, maxSpeechDuration: 20, windowSize: 256 },
+        sampleRate: SAMPLE_RATE,
+        numThreads: 1,
+        provider: 'cpu',
+        debug: 0,
+        bufferSizeInSeconds: 30,
+      });
       // Buffers incoming audio until at least one full VAD window is
       // available — frame sizes arriving from audio.js won't line up with
       // the VAD's required window size, and feeding partial windows would

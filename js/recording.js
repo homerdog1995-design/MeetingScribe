@@ -5,6 +5,7 @@ import { storage } from './storage.js';
 import { AudioEngine } from './audio.js';
 import { transcriptionManager } from './transcription.js';
 import { bindConfigurableHotkey } from './hotkeys.js';
+import { logger } from './logger.js';
 import { qs, qsa, el, formatTimestamp, showToast, openModal } from './utils.js';
 
 /**
@@ -315,12 +316,25 @@ async function stopRecording() {
   e.statusText.textContent = 'Finalizing…';
 
   try {
+    // Transcription shutdown is isolated deliberately: if the engine is in
+    // a broken state, its stop() must never prevent the recording from
+    // being finalized and saved. Losing a meeting's audio because the
+    // transcriber failed would be a far worse outcome than losing the
+    // last few seconds of transcript.
+    const stopTranscription = async () => {
+      try {
+        await transcriptionManager.stop();
+      } catch (error) {
+        logger.error('recording', 'Transcription engine failed to stop cleanly', { message: error.message });
+      }
+    };
+
     if (transcriptOnlyMode) {
-      await transcriptionManager.stop();
+      await stopTranscription();
       await storage.updateMeeting(meetingId, { duration_ms: durationMs, status: 'recorded' });
     } else {
       await audioEngine?.stop();
-      await transcriptionManager.stop();
+      await stopTranscription();
       await storage.finalizeRecording(sessionId, meetingId, durationMs);
     }
     const refreshed = await storage.getMeeting(meetingId);

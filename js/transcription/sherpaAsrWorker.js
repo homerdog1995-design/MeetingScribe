@@ -113,31 +113,51 @@ self.onmessage = async (event) => {
       self.postMessage({ type: 'loaded', requestId, sampleRate: SAMPLE_RATE });
 
     } else if (type === 'feed') {
-      if (!recognizer || !vad) throw new Error('ASR model is not loaded.');
-      const samples = event.data.samples instanceof Float32Array ? event.data.samples : new Float32Array(event.data.samples);
-      circularBuffer.push(samples);
+      if (!recognizer || !vad || !circularBuffer) throw new Error('ASR model is not loaded.');
 
-      const windowSize = vad.config.sileroVad.windowSize;
-      while (circularBuffer.size() > windowSize) {
-        vad.acceptWaveform(circularBuffer.get(circularBuffer.head(), windowSize));
-        circularBuffer.pop(windowSize);
+      // Each stage is labelled so a failure reports where it actually
+      // happened. An earlier bug here surfaced only as a bare
+      // "Cannot read properties of undefined" with no indication of which
+      // call produced it, which made it far harder to locate than it
+      // should have been.
+      let stage = 'decode-samples';
+      const samples = event.data.samples instanceof Float32Array ? event.data.samples : new Float32Array(event.data.samples);
+
+      try {
+        stage = 'circularBuffer.push';
+        circularBuffer.push(samples);
+
+        stage = 'read-vad-window-size';
+        const windowSize = vad.config.sileroVad.windowSize;
+
+        stage = 'vad.acceptWaveform';
+        while (circularBuffer.size() > windowSize) {
+          vad.acceptWaveform(circularBuffer.get(circularBuffer.head(), windowSize));
+          circularBuffer.pop(windowSize);
+        }
+      } catch (stageError) {
+        throw new Error(`[${stage}] ${stageError.message}`);
       }
 
       // Each completed VAD segment is one acoustically-delimited utterance:
       // decode it as a whole, which is exactly what Whisper is good at.
       const results = [];
-      while (!vad.isEmpty()) {
-        const segment = vad.front();
-        const durationMs = (segment.samples.length / SAMPLE_RATE) * 1000;
-        vad.pop();
+      try {
+        while (!vad.isEmpty()) {
+          const segment = vad.front();
+          const durationMs = (segment.samples.length / SAMPLE_RATE) * 1000;
+          vad.pop();
 
-        const stream = recognizer.createStream();
-        stream.acceptWaveform(SAMPLE_RATE, segment.samples);
-        recognizer.decode(stream);
-        const text = recognizer.getResult(stream).text.trim();
-        stream.free();
+          const stream = recognizer.createStream();
+          stream.acceptWaveform(SAMPLE_RATE, segment.samples);
+          recognizer.decode(stream);
+          const text = recognizer.getResult(stream).text.trim();
+          stream.free();
 
-        if (text) results.push({ text, durationMs });
+          if (text) results.push({ text, durationMs });
+        }
+      } catch (recogError) {
+        throw new Error(`[recognize-segment] ${recogError.message}`);
       }
 
       self.postMessage({ type: 'result', requestId, results, speechActive: vad.isDetected() });

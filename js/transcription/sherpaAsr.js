@@ -30,6 +30,7 @@ export class SherpaAsrProvider extends TranscriptionProvider {
     this._consecutiveFailures = 0;
     this._pendingFrameCount = 0;
     this._pendingSegments = []; // completed VAD segments awaiting dispatch
+    this._givenUp = false; // set once transcription has failed permanently this session, so remaining frames are ignored silently
   }
 
   get label() { return 'Whisper (on-device)'; }
@@ -52,6 +53,7 @@ export class SherpaAsrProvider extends TranscriptionProvider {
   async start() {
     this._streamElapsedMs = 0;
     this._pendingSegments = [];
+    this._givenUp = false;
     await this._spawnWorker();
   }
 
@@ -83,6 +85,7 @@ export class SherpaAsrProvider extends TranscriptionProvider {
 
   async _processFrame(samples) {
     this._pendingFrameCount -= 1;
+    if (this._givenUp) return; // already failed permanently this session — stay quiet rather than erroring on every remaining frame
     const QUEUE_DEPTH_WARNING_THRESHOLD = 10; // ~1-2s of backlog at typical frame sizes — worth knowing about, not yet a hard problem
     if (this._pendingFrameCount >= QUEUE_DEPTH_WARNING_THRESHOLD && this._pendingFrameCount % 10 === 0) {
       logger.warn('sherpaAsr', 'Processing is falling behind real-time audio — the live transcript may lag noticeably', { pendingFrames: this._pendingFrameCount });
@@ -131,15 +134,23 @@ export class SherpaAsrProvider extends TranscriptionProvider {
 
       const REPEATED_FAILURE_THRESHOLD = 3;
       if (this._consecutiveFailures >= REPEATED_FAILURE_THRESHOLD) {
+        // Give up cleanly rather than continuing to fail on every frame.
+        // Two things matter here: the recording itself must keep going
+        // (audio capture is entirely independent of transcription, so the
+        // user doesn't lose their meeting), and the failure must be stated
+        // once, clearly, rather than repeated per-frame.
+        this._givenUp = true;
         await settingsStore.set({ engines: { sherpaAsr: { enabled: false } } });
         this.dispatchEvent(new CustomEvent('error', {
           detail: {
-            message: 'Speech recognition failed repeatedly and has been turned off automatically. Future recordings will use Web Speech instead — see Settings → AI Engines to re-enable it.',
+            message: 'Live transcription stopped working and has been turned off. Your recording is still being saved normally, and you can transcribe or re-run it later — see Settings → AI Engines.',
             fatal: true,
           },
         }));
         this._worker?.terminate();
         this._worker = null;
+        this._pending.forEach(({ reject }) => reject(new Error('Speech recognition stopped')));
+        this._pending.clear();
         return;
       }
 

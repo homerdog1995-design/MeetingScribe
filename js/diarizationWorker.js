@@ -18,7 +18,11 @@
  * *finished* recording, not a live indicator during recording.
  */
 
-const ASSET_BASE = './assets/speaker-diarization/';
+// Relative to THIS FILE's own location (js/diarizationWorker.js), not the
+// site root — fetch()/importScripts() inside a Worker resolve against the
+// worker's own script URL (self.location), not the page that created it.
+// One level up reaches the project root, then into assets/.
+const ASSET_BASE = '../assets/speaker-diarization/';
 
 self.Module = self.Module || {};
 // Explicit override rather than relying on the glue script's own

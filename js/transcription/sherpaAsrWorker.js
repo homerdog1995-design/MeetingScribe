@@ -33,7 +33,11 @@
  * relying on any third-party host's CORS policy at all.
  */
 
-const ASSET_BASE = './assets/speech-recognition/';
+// Relative to THIS FILE's own location (js/transcription/sherpaAsrWorker.js),
+// not the site root — fetch()/importScripts() inside a Worker resolve
+// against the worker's own script URL (self.location), not the page that
+// created it. Two levels up reaches the project root, then into assets/.
+const ASSET_BASE = '../../assets/speech-recognition/';
 const DATA_PARTS = ['sherpa-onnx-wasm-main-asr.data.part00', 'sherpa-onnx-wasm-main-asr.data.part01', 'sherpa-onnx-wasm-main-asr.data.part02'];
 
 let recognizer = null;

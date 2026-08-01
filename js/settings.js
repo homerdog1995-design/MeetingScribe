@@ -185,7 +185,7 @@ async function refreshEngineDetection() {
   const container = qs('#engine-detection-list');
   container.innerHTML = '';
   const rows = [
-    { label: 'Sherpa-ONNX ASR (on-device)', ok: detection.sherpaAsr.available },
+    { label: 'Whisper (on-device)', ok: detection.sherpaAsr.available },
     { label: 'Web Speech API', ok: detection.webSpeech.enabled },
     { label: 'Speaker Diarization (on-device)', ok: detection.diarization.available },
     { label: 'Ollama', ok: detection.ollama.available },

@@ -27,7 +27,7 @@ import { isAvailable as isDiarizationAvailable } from './diarization.js';
 async function detectSherpaAsr(settings) {
   if (!settings.engines.sherpaAsr.enabled) return { available: false };
   try {
-    const response = await fetch('./assets/speech-recognition/sherpa-onnx-wasm-main-asr.js', { method: 'HEAD' });
+    const response = await fetch('./assets/speech-recognition/sherpa-onnx-wasm-main-vad-asr.js', { method: 'HEAD' });
     return { available: response.ok };
   } catch {
     return { available: false };

@@ -103,66 +103,46 @@ with that specific compiled binary. The chain is now:
 [Sherpa-ONNX ASR, Web Speech API]
 ```
 
-**Sherpa-ONNX ASR** (`transcription/sherpaAsr.js` /
-`transcription/sherpaAsrWorker.js`) runs a streaming Zipformer ASR model
-via a vendored build of [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)
+**Whisper via sherpa-onnx** (`transcription/sherpaAsr.js` /
+`transcription/sherpaAsrWorker.js`) runs OpenAI's Whisper (tiny.en),
+gated by Silero VAD, from sherpa-onnx's official prebuilt WASM package
 (Apache-2.0, `assets/speech-recognition/`) — the same toolkit as the
-speaker-diarization feature (§12), already proven to run successfully in
-real device testing before this integration was attempted. This is now the
-committed, primary engine (no other engine is being evaluated to replace
-it) — remaining effort goes into improving its pipeline, not searching for
-alternatives. Unlike the old Whisper WASM integration (which processed
-discrete, pre-chunked WAV buffers), this engine is fed a **continuous
-stream of small raw audio frames** (see audio.js's `pcm-frame` event) and
-has **real, built-in endpoint detection** — an acoustic signal for "this
-utterance just ended," not a guess from silence gaps. That's what
-actually fixes repeated/stacked words in the live transcript: text is
-only ever committed once the engine itself confirms an utterance
-boundary. No setup is needed — the engine and model are committed
-directly into this repo (split into <100MB parts and reassembled via
-same-origin `fetch()` at load time, since the ~191MB model exceeds
-GitHub's per-file push limit and its release-asset host doesn't send CORS
-headers — see `sherpaAsrWorker.js`'s file header). It's on by default;
-Settings → AI Engines can turn it off, and it disables itself
-automatically after repeated failures.
+speaker-diarization feature (§12).
 
-**Decoding is tuned, not left at defaults** (`sherpaAsrWorker.js`):
-`modified_beam_search` (maxActivePaths: 8) instead of the library's
-default `greedy_search`, trading a bit of speed for meaningfully better
-accuracy — affordable here since this already runs single-threaded (see
-below) on a small, fast model. Endpoint silence thresholds are named
-constants at the top of the file specifically so they're easy to find and
-adjust later, rather than being magic numbers buried in a config object.
-Raw model output is ALL CAPS (this checkpoint was trained on
-casing-stripped text — a deliberate, common choice for this class of ASR
-training, not a bug) — `normalizeCasing()` in `sherpaAsr.js` restores
-sentence-start capitals and standalone "I" as a post-processing pass,
-since the model itself never learned casing at all.
+**This replaced an earlier streaming Zipformer model** (same toolkit,
+different model) after real-world testing showed roughly 30% word
+accuracy, ALL-CAPS output, and hallucinated filler words during silence.
+Those weren't tuning problems — they were consequences of the model class.
+A *streaming* model must commit to words having heard a fraction of a
+second of context; Whisper is *offline/non-streaming*, seeing a whole
+utterance before deciding anything, and produces natural casing and
+punctuation itself (the streaming checkpoint had been trained on
+casing-stripped text and could never produce either).
 
-**Audio preprocessing** (`audio.js`): frames are resampled to 16kHz mono
-(explicit `channelInterpretation: 'speakers'`, not relying on implicit
-browser defaults, so a stereo/multi-channel source properly downmixes
-rather than silently losing a channel) and then gain-normalized
-(RMS-based, capped boost) before reaching the engine, so quiet speech
-gets pulled toward the loudness these models are generally trained on
-without amplifying near-silence into audible noise.
+**VAD is what makes the offline model practical for live use.** Silero
+VAD segments real speech acoustically, and only complete speech segments
+ever reach Whisper. This app no longer guesses where utterances begin and
+end at all. It also means silence never reaches the model — addressing
+hallucination-during-silence at the source rather than filtering model
+output afterward (an earlier RMS-based guard, now removed as redundant).
 
-**Why this is genuinely continuous streaming, not chunk-and-reconcile**:
-an earlier design (used for the removed Whisper WASM integration) sliced
-audio into discrete, silence-delimited buffers and decoded each one in
-isolation — a design where words really can get lost or duplicated at
-chunk boundaries, which is what overlapping-window reconciliation exists
-to paper over. This app doesn't chunk audio at the application level at
-all anymore: `audio.js` streams small frames continuously into one
-persistent recognizer stream, and the engine's own endpoint detection (not
-any boundary this app imposes) decides where one utterance ends and the
-next begins. There's no boundary to reconcile in the first place. The
-practical equivalent of "dropped audio" in this design isn't a chunk edge
-— it's the processing queue falling behind real-time arrival on a slower
-device (nothing is ever silently dropped; every frame is queued and
-processed in order, but latency could grow). `sherpaAsr.js` logs a
-warning if the queue depth crosses a threshold, so that's diagnosable
-rather than invisible.
+**The trade-off, stated plainly:** text appears once a phrase *finishes*
+rather than word-by-word as it's spoken. For meeting notes that's
+generally the better trade, but it is a real behavioural change from the
+streaming model.
+
+Timestamps are reconstructed per segment by working backwards from the
+current stream position using each VAD segment's own duration — the VAD
+only surfaces a segment once it has ended, so "it ended around now and
+lasted this long" is the accurate reading. Much better than the streaming
+model's approximation, though still not sample-exact.
+
+No setup is needed — engine and model are committed directly into this
+repo (split into <100MB parts and reassembled via same-origin `fetch()`
+at load time, since the ~104MB bundle exceeds GitHub's per-file push
+limit and its release-asset host doesn't send CORS headers — see
+`sherpaAsrWorker.js`'s file header). On by default; Settings → AI Engines
+can turn it off, and it disables itself after repeated failures.
 
 Web Speech API remains the last-resort, explicitly-disclosed, non-offline
 fallback (see §9) — and, per real device testing, has a genuine

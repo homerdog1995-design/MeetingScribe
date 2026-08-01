@@ -239,8 +239,8 @@ export class AudioEngine extends EventTarget {
     this._streamNode.onaudioprocess = (event) => {
       const input = event.inputBuffer.getChannelData(0);
       const resampled = resampleLinear(input, this.audioContext.sampleRate, TARGET_SAMPLE_RATE);
-      const { samples: normalized, hasSignal } = normalizeGain(resampled);
-      this.dispatchEvent(new CustomEvent('pcm-frame', { detail: { samples: normalized, hasSignal } }));
+      const normalized = normalizeGain(resampled);
+      this.dispatchEvent(new CustomEvent('pcm-frame', { detail: { samples: normalized } }));
     };
   }
 
@@ -266,21 +266,31 @@ function rmsFromByteTimeDomain(byteData) {
 }
 
 const TARGET_RMS = 0.08; // a reasonable target loudness for typical speech, matching what these models are generally trained on
-const NOISE_FLOOR_RMS = 0.012; // below this, treat it as ambient room noise/mic self-noise rather than quiet speech — confirmed via real device testing that a too-low threshold here (1e-4, essentially only true digital silence) let real ambient noise get amplified into the model's hearing range, causing hallucinated repeated words during actual silence
-const MAX_NORMALIZATION_GAIN = 3; // lowered from 6 as an additional safety margin against amplifying noise into audible/model-perceptible artifacts
+const NOISE_FLOOR_RMS = 0.012; // below this, treat it as ambient room noise/mic self-noise rather than quiet speech, and leave it untouched
+const MAX_NORMALIZATION_GAIN = 3; // caps how much a quiet frame can be boosted
 
-/** Boosts (or gently attenuates) a frame toward a consistent target loudness, based on its RMS energy. Also reports whether the frame had any real signal above the noise floor, for use as an independent guard against committing hallucinated ASR output during actual silence. */
+/**
+ * Boosts (or gently attenuates) a frame toward a consistent target
+ * loudness based on its RMS energy, so a quiet talker or distant mic gets
+ * pulled toward the level speech models are generally trained on.
+ *
+ * Note that silence handling is NOT this function's job: Silero VAD (in
+ * sherpaAsrWorker.js) gates audio acoustically before it ever reaches
+ * Whisper, so silence and ambient noise are excluded at the source rather
+ * than filtered afterward. The noise-floor check here exists only to
+ * avoid pointlessly amplifying near-silence, not as a correctness
+ * safeguard.
+ */
 function normalizeGain(samples) {
   let sumSquares = 0;
   for (let i = 0; i < samples.length; i++) sumSquares += samples[i] * samples[i];
   const rms = Math.sqrt(sumSquares / samples.length);
-  const hasSignal = rms >= NOISE_FLOOR_RMS;
-  if (!hasSignal) return { samples, hasSignal }; // ambient noise or silence — leave it exactly as captured rather than amplifying it into something the model might mistake for quiet speech
+  if (rms < NOISE_FLOOR_RMS) return samples;
   const gain = Math.min(TARGET_RMS / rms, MAX_NORMALIZATION_GAIN);
-  if (Math.abs(gain - 1) < 0.05) return { samples, hasSignal }; // already close enough — skip the redundant pass
+  if (Math.abs(gain - 1) < 0.05) return samples;
   const output = new Float32Array(samples.length);
   for (let i = 0; i < samples.length; i++) output[i] = clamp(samples[i] * gain, -1, 1);
-  return { samples: output, hasSignal };
+  return output;
 }
 
 /**

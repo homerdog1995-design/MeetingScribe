@@ -25,15 +25,14 @@ export class SherpaAsrProvider extends TranscriptionProvider {
     this._worker = null;
     this._requestSeq = 0;
     this._pending = new Map();
-    this._utteranceStartMs = 0; // when the current, not-yet-committed utterance began
     this._streamElapsedMs = 0; // total audio fed so far, i.e. this session's absolute timeline
     this._queue = Promise.resolve();
     this._consecutiveFailures = 0;
     this._pendingFrameCount = 0;
-    this._hasObservedSignalThisUtterance = false; // guards against committing hallucinated text if the model outputs something despite every fed frame being pure silence/ambient noise
+    this._pendingSegments = []; // completed VAD segments awaiting dispatch
   }
 
-  get label() { return 'Sherpa-ONNX ASR (on-device)'; }
+  get label() { return 'Whisper (on-device)'; }
 
   async isAvailable() {
     const settings = await settingsStore.get();
@@ -43,7 +42,7 @@ export class SherpaAsrProvider extends TranscriptionProvider {
     // something is wrong with the deployment itself, not something the
     // user needs to configure.
     try {
-      const response = await fetch('./assets/speech-recognition/sherpa-onnx-wasm-main-asr.js', { method: 'HEAD' });
+      const response = await fetch('./assets/speech-recognition/sherpa-onnx-wasm-main-vad-asr.js', { method: 'HEAD' });
       return response.ok;
     } catch {
       return false;
@@ -51,9 +50,8 @@ export class SherpaAsrProvider extends TranscriptionProvider {
   }
 
   async start() {
-    this._utteranceStartMs = 0;
     this._streamElapsedMs = 0;
-    this._hasObservedSignalThisUtterance = false;
+    this._pendingSegments = [];
     await this._spawnWorker();
   }
 
@@ -77,60 +75,54 @@ export class SherpaAsrProvider extends TranscriptionProvider {
    * processing can't keep up with real-time audio arrival on a slower
    * device. That's monitored below rather than left invisible.
    */
-  async submitAudioChunk({ samples, hasSignal }) {
+  async submitAudioChunk({ samples }) {
     this._pendingFrameCount += 1;
-    this._queue = this._queue.then(() => this._processFrame(samples, hasSignal));
+    this._queue = this._queue.then(() => this._processFrame(samples));
     return this._queue;
   }
 
-  async _processFrame(samples, hasSignal) {
+  async _processFrame(samples) {
     this._pendingFrameCount -= 1;
-    if (hasSignal) this._hasObservedSignalThisUtterance = true;
     const QUEUE_DEPTH_WARNING_THRESHOLD = 10; // ~1-2s of backlog at typical frame sizes — worth knowing about, not yet a hard problem
     if (this._pendingFrameCount >= QUEUE_DEPTH_WARNING_THRESHOLD && this._pendingFrameCount % 10 === 0) {
       logger.warn('sherpaAsr', 'Processing is falling behind real-time audio — the live transcript may lag noticeably', { pendingFrames: this._pendingFrameCount });
     }
     if (!this._worker) return;
+
     const frameDurationMs = (samples.length / 16000) * 1000;
-    const frameStartMs = this._streamElapsedMs;
-    this._streamElapsedMs += frameDurationMs;
+    const frameEndMs = this._streamElapsedMs + frameDurationMs;
+    this._streamElapsedMs = frameEndMs;
 
     try {
-      const { text: rawText, isEndpoint } = await this._call('feed', { samples }, [samples.buffer]);
-      const text = normalizeCasing(rawText);
+      const { results } = await this._call('feed', { samples }, [samples.buffer]);
       this._consecutiveFailures = 0;
-      // Confirmed via real device testing: this class of streaming model
-      // can hallucinate short, plausible-sounding filler words ("and",
-      // "the") from pure silence/ambient noise, especially with beam
-      // search actively searching for higher-scoring output rather than
-      // committing to blank/silence. Regardless of the exact cause,
-      // trusting output the engine claims is final when every fed frame
-      // this utterance was genuinely below the noise floor would mean
-      // inserting fabricated content into a meeting transcript, which is
-      // worse than briefly missing a word. This is deliberately
-      // independent of the audio-preprocessing fix (audio.js's
-      // NOISE_FLOOR_RMS) — a second, cheap safeguard, not a replacement
-      // for getting the input-side fix right.
-      if (isEndpoint && text && !this._hasObservedSignalThisUtterance) {
-        logger.warn('sherpaAsr', 'Discarded likely-hallucinated result — no real signal observed this utterance', { text });
-        this._utteranceStartMs = frameStartMs + frameDurationMs;
-        this._hasObservedSignalThisUtterance = false;
-        return;
+
+      // Each result is one complete, VAD-delimited utterance that Whisper
+      // decoded as a whole. Their timestamps are reconstructed by working
+      // backwards from the current stream position using each segment's
+      // own duration: the VAD only surfaces a segment once it has ended,
+      // so "it ended around now, and it lasted this long" is the accurate
+      // reading — far better than the previous engine's approximation,
+      // though still not sample-exact.
+      let cursorMs = frameEndMs;
+      for (const result of results.slice().reverse()) {
+        const endMs = cursorMs;
+        const startMs = Math.max(0, endMs - result.durationMs);
+        cursorMs = startMs;
+        this._pendingSegments.unshift({ text: result.text, startMs, endMs });
       }
-      if (isEndpoint && text) {
+
+      while (this._pendingSegments.length) {
+        const segment = this._pendingSegments.shift();
         this.dispatchEvent(new CustomEvent('segment', {
           detail: {
-            text,
-            startMs: this._utteranceStartMs,
-            endMs: frameStartMs + frameDurationMs,
-            speakerTurn: false, // an endpoint means "an utterance just ended", not "a different person is now speaking" — editor.js's own gap-based heuristic still decides speaker turns, now with genuinely meaningful timestamps instead of Web Speech's "always now"
+            text: segment.text,
+            startMs: segment.startMs,
+            endMs: segment.endMs,
+            speakerTurn: false, // a VAD segment boundary means "speech paused", not "a different person is speaking" — editor.js's gap heuristic and the diarization pass handle speaker attribution
             confidence: null,
           },
         }));
-      }
-      if (isEndpoint) {
-        this._utteranceStartMs = frameStartMs + frameDurationMs;
-        this._hasObservedSignalThisUtterance = false;
       }
     } catch (error) {
       this._consecutiveFailures += 1;
@@ -138,14 +130,10 @@ export class SherpaAsrProvider extends TranscriptionProvider {
 
       const REPEATED_FAILURE_THRESHOLD = 3;
       if (this._consecutiveFailures >= REPEATED_FAILURE_THRESHOLD) {
-        // Failing this consistently means retrying indefinitely has no
-        // realistic path to success this session — self-disable so future
-        // recordings fall back to Web Speech automatically instead of
-        // requiring a manual trip to Settings.
         await settingsStore.set({ engines: { sherpaAsr: { enabled: false } } });
         this.dispatchEvent(new CustomEvent('error', {
           detail: {
-            message: 'Sherpa ASR failed repeatedly and has been turned off automatically. Future recordings will use Web Speech instead — see Settings → AI Engines to re-enable it.',
+            message: 'Speech recognition failed repeatedly and has been turned off automatically. Future recordings will use Web Speech instead — see Settings → AI Engines to re-enable it.',
             fatal: true,
           },
         }));
@@ -154,12 +142,12 @@ export class SherpaAsrProvider extends TranscriptionProvider {
         return;
       }
 
-      this.dispatchEvent(new CustomEvent('error', { detail: { message: `Sherpa ASR error: ${error.message}`, fatal: false } }));
+      this.dispatchEvent(new CustomEvent('error', { detail: { message: `Speech recognition error: ${error.message}`, fatal: false } }));
       try {
         await this._spawnWorker();
       } catch (reloadError) {
         logger.error('sherpaAsr', 'Worker recovery failed', { message: reloadError.message });
-        this.dispatchEvent(new CustomEvent('error', { detail: { message: `Could not recover Sherpa ASR: ${reloadError.message}`, fatal: true } }));
+        this.dispatchEvent(new CustomEvent('error', { detail: { message: `Could not recover speech recognition: ${reloadError.message}`, fatal: true } }));
       }
     }
   }
@@ -189,22 +177,4 @@ export class SherpaAsrProvider extends TranscriptionProvider {
     else if (data.type === 'result') pending.resolve({ text: data.text, isEndpoint: data.isEndpoint });
     else if (data.type === 'ok') pending.resolve();
   }
-}
-
-/**
- * This streaming checkpoint was trained on text with casing stripped
- * during preprocessing (a common choice for CTC/transducer ASR training,
- * since raw acoustic modeling doesn't need it) — it never learned casing
- * at all, which is why its raw output is ALL CAPS. This is a
- * post-processing fix, not something tunable in the model itself:
- * lowercase everything, then restore the casing conventions a reader
- * actually expects.
- */
-function normalizeCasing(rawText) {
-  if (!rawText) return rawText;
-  let text = rawText.toLowerCase();
-  text = text.charAt(0).toUpperCase() + text.slice(1);
-  text = text.replace(/([.!?]\s+)([a-z])/g, (_, sep, letter) => sep + letter.toUpperCase());
-  text = text.replace(/\bi\b/g, 'I');
-  return text;
 }

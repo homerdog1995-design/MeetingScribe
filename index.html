@@ -298,19 +298,21 @@
           <div id="engine-detection-list" class="engine-detection-list"></div>
           <button id="btn-rescan-engines" class="btn btn-small" type="button">Re-scan</button>
 
-          <h3>Sherpa-ONNX ASR <span class="badge badge-success">Fully offline</span></h3>
+          <h3>Whisper <span class="badge badge-success">Fully offline</span></h3>
           <p class="settings-help">
-            Runs entirely in this browser tab, on-device — the primary
-            offline transcription engine (a browser page cannot spawn
-            native binaries like whisper.cpp or faster-whisper at all,
-            under any circumstances). Uses real, built-in endpoint
-            detection to know when a sentence has actually finished,
-            rather than guessing from pauses — this is what keeps live
-            text from repeating itself. The model is bundled directly with
-            this app, so there's nothing to download or set up.
+            Runs OpenAI's Whisper speech recognition entirely in this
+            browser tab, on-device (a browser page cannot spawn native
+            binaries like whisper.cpp at all, under any circumstances).
+            Voice activity detection finds where speech actually starts
+            and stops, then Whisper transcribes each complete phrase — so
+            text appears a moment after you finish speaking rather than
+            word-by-word, in exchange for much better accuracy, natural
+            punctuation and capitalisation, and no invented words during
+            silence. The model is bundled with this app; nothing to
+            download or set up.
           </p>
           <label class="settings-row">
-            <span>Use Sherpa-ONNX ASR for transcription</span>
+            <span>Use Whisper for transcription</span>
             <input id="setting-sherpa-asr-enabled" type="checkbox" />
           </label>
 

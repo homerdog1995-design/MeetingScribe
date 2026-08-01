@@ -8,10 +8,17 @@
  *  - mixing microphone + system audio into one synchronized graph for
  *    "mixed" recording mode
  *  - live input-level metering (per source, for the recording toolbar)
- *  - a voice-activity-based chunker that slices the live audio into short
- *    WAV segments at natural silence gaps, for handoff to a transcription
- *    provider (see js/transcription.js)
+ *  - a continuous PCM stream tap, resampled to 16kHz mono, for handoff to
+ *    the Sherpa ASR provider (see js/transcription/sherpaAsr.js)
  *  - the MediaRecorder that produces the actual saved recording file
+ *
+ * CHANGED: this used to buffer audio into silence-delimited chunks and
+ * encode each one as a WAV file, for the old (now-removed) Whisper WASM
+ * integration, which needed discrete pre-segmented utterances. Sherpa's
+ * ASR engine has its own real, built-in endpoint detection and expects a
+ * continuous stream of small raw audio frames instead — pre-chunking the
+ * audio here would throw away exactly the signal that engine depends on.
+ * See sherpaAsr.js's file header for the full reasoning.
  *
  * See ARCHITECTURE.md §10 for the platform limitation that system-audio
  * loopback captures the whole OS audio mix, not a single selected window.
@@ -19,9 +26,9 @@
 
 import { clamp } from './utils.js';
 
-const TARGET_SAMPLE_RATE = 16000; // the Whisper WASM engine expects 16kHz mono
+const TARGET_SAMPLE_RATE = 16000; // the Sherpa ASR engine expects 16kHz mono
 const ANALYSER_FFT_SIZE = 1024;
-const CHUNKER_BUFFER_SIZE = 4096; // ScriptProcessorNode block size
+const STREAM_BUFFER_SIZE = 4096; // ScriptProcessorNode block size (~85-256ms depending on native sample rate)
 
 export class AudioEngine extends EventTarget {
   constructor() {
@@ -37,20 +44,11 @@ export class AudioEngine extends EventTarget {
     this._systemAnalyser = null;
     this._levelLoopHandle = null;
 
-    this._chunkerNode = null;
-    this._chunkerBuffer = [];
-    this._chunkerSamplesSinceSilence = 0;
-    this._chunkerSilenceMs = 700;
-    this._chunkerMaxChunkMs = 15000;
-    this._chunkerStartMs = 0;
-    this._chunkerRecordingStartedAt = 0;
-    this._isSilent = true;
-    this._silenceStartedAt = 0;
+    this._streamNode = null;
   }
 
   /** @param {'microphone'|'system'|'mixed'} mode */
-  async start(mode, { speakerChangeSilenceMs = 700, audioBitsPerSecond = 96000, minimalAudioConstraints = false } = {}) {
-    this._chunkerSilenceMs = speakerChangeSilenceMs;
+  async start(mode, { audioBitsPerSecond = 96000, minimalAudioConstraints = false } = {}) {
     this.audioContext = new AudioContext();
     this.recorderChunkIndex = 0;
 
@@ -76,7 +74,8 @@ export class AudioEngine extends EventTarget {
     // destination (MediaStreamAudioDestinationNode) has ZERO outputs by
     // design — it's a terminal sink whose .stream is read, never something
     // you connect FROM. A separate mix bus (a plain GainNode, which does
-    // have outputs) is what both the recorder and the chunker actually tap.
+    // have outputs) is what both the recorder and the PCM stream tap
+    // actually use.
     const mixBus = this.audioContext.createGain();
     mixBus.gain.value = 1;
     mixBus.connect(destination);
@@ -98,11 +97,9 @@ export class AudioEngine extends EventTarget {
     }
 
     this.mixedDestinationStream = destination.stream;
-    this._chunkerRecordingStartedAt = performance.now();
-    this._chunkerStartMs = 0;
 
     this._startLevelMetering();
-    this._startChunker(mixBus);
+    this._startPcmStream(mixBus);
     this._startMediaRecorder(this.mixedDestinationStream, audioBitsPerSecond);
 
     return { sampleRate: this.audioContext.sampleRate };
@@ -120,11 +117,10 @@ export class AudioEngine extends EventTarget {
 
   async stop() {
     this._stopLevelMetering();
-    this._flushChunk(true);
 
-    if (this._chunkerNode) {
-      this._chunkerNode.disconnect();
-      this._chunkerNode = null;
+    if (this._streamNode) {
+      this._streamNode.disconnect();
+      this._streamNode = null;
     }
 
     const recorderStopped = new Promise((resolve) => {
@@ -209,93 +205,32 @@ export class AudioEngine extends EventTarget {
   }
 
   /**
-   * Voice-activity-based chunker: buffers mono PCM samples from the mixed
-   * graph and flushes a chunk as soon as it detects a silence gap at or
-   * beyond the configured threshold, or when a maximum chunk duration is
-   * reached (so continuous uninterrupted speech still gets transcribed
-   * incrementally rather than only at the very end of the meeting).
+   * Continuous PCM tap: every audio block from the mixed graph is
+   * resampled to 16kHz mono and emitted immediately as a 'pcm-frame' event
+   * — no buffering, no silence detection, no chunking. The ASR engine
+   * (sherpaAsr.js) decides utterance boundaries itself via real endpoint
+   * detection; this just needs to keep the samples flowing.
    */
-  _startChunker(mixBus) {
-    this._chunkerNode = this.audioContext.createScriptProcessor(CHUNKER_BUFFER_SIZE, 1, 1);
+  _startPcmStream(mixBus) {
+    this._streamNode = this.audioContext.createScriptProcessor(STREAM_BUFFER_SIZE, 1, 1);
     const monoTap = this.audioContext.createGain();
     monoTap.gain.value = 1;
     mixBus.connect(monoTap);
-    monoTap.connect(this._chunkerNode);
+    monoTap.connect(this._streamNode);
 
     // A ScriptProcessorNode only fires onaudioprocess while it's part of a
     // graph that reaches audioContext.destination — routing through a
     // zero-gain node keeps it "live" without producing any audible echo.
     const silentSink = this.audioContext.createGain();
     silentSink.gain.value = 0;
-    this._chunkerNode.connect(silentSink);
+    this._streamNode.connect(silentSink);
     silentSink.connect(this.audioContext.destination);
 
-    this._chunkerNode.onaudioprocess = (event) => {
+    this._streamNode.onaudioprocess = (event) => {
       const input = event.inputBuffer.getChannelData(0);
-      const samples = new Float32Array(input.length);
-      samples.set(input);
-
-      const energy = rmsFromFloat32(samples);
-      const nowMs = performance.now() - this._chunkerRecordingStartedAt;
-      const SILENCE_ENERGY_THRESHOLD = 0.012;
-
-      if (energy < SILENCE_ENERGY_THRESHOLD) {
-        if (!this._isSilent) {
-          this._isSilent = true;
-          this._silenceStartedAt = nowMs;
-        }
-      } else {
-        this._isSilent = false;
-      }
-
-      this._chunkerBuffer.push(samples);
-      const bufferedMs = (this._chunkerBuffer.length * CHUNKER_BUFFER_SIZE / this.audioContext.sampleRate) * 1000;
-      const silenceDuration = this._isSilent ? nowMs - this._silenceStartedAt : 0;
-
-      const shouldFlushForSilence = this._isSilent && silenceDuration >= this._chunkerSilenceMs && bufferedMs >= 500;
-      const shouldFlushForMaxLength = bufferedMs >= this._chunkerMaxChunkMs;
-
-      if (shouldFlushForSilence || shouldFlushForMaxLength) {
-        this._flushChunk(false);
-      }
+      const resampled = resampleLinear(input, this.audioContext.sampleRate, TARGET_SAMPLE_RATE);
+      this.dispatchEvent(new CustomEvent('pcm-frame', { detail: { samples: resampled } }));
     };
-  }
-
-  _flushChunk(isFinal) {
-    if (this._chunkerBuffer.length === 0) return;
-
-    const totalLength = this._chunkerBuffer.reduce((sum, b) => sum + b.length, 0);
-    const durationMs = (totalLength / this.audioContext.sampleRate) * 1000;
-
-    // Whisper's mel-spectrogram computation needs a real minimum amount of
-    // audio to work with — feeding it a very short fragment (in practice,
-    // this only ever happens via the forced final flush on stop(), since
-    // the silence-triggered path already requires >=500ms) is a known
-    // trigger for a low-level abort inside the WASM engine, which then
-    // leaves it permanently wedged for the rest of the recording. Below
-    // this threshold, the fragment is simply too short to contain
-    // meaningfully transcribable speech anyway, so it's dropped rather
-    // than risking the whole engine — this only affects live
-    // transcription, never the saved recording (captured separately).
-    const MIN_CHUNK_MS = 500;
-    if (durationMs < MIN_CHUNK_MS) {
-      this._chunkerBuffer = [];
-      return;
-    }
-
-    const merged = new Float32Array(totalLength);
-    let offset = 0;
-    for (const buf of this._chunkerBuffer) { merged.set(buf, offset); offset += buf.length; }
-
-    const startMs = this._chunkerStartMs;
-    const endMs = startMs + durationMs;
-    this._chunkerStartMs = endMs;
-    this._chunkerBuffer = [];
-
-    resampleTo16kMono(merged, this.audioContext.sampleRate).then((resampled) => {
-      const wavBuffer = encodeWavPcm16(resampled, TARGET_SAMPLE_RATE);
-      this.dispatchEvent(new CustomEvent('chunk-ready', { detail: { wavBuffer, startMs, endMs, isFinal } }));
-    });
   }
 
   _startMediaRecorder(stream, audioBitsPerSecond) {
@@ -319,58 +254,27 @@ function rmsFromByteTimeDomain(byteData) {
   return clamp(Math.sqrt(sumSquares / byteData.length) * 3.2, 0, 1); // *3.2 empirically maps typical speech RMS into a usable 0-1 meter range
 }
 
-function rmsFromFloat32(samples) {
-  let sumSquares = 0;
-  for (let i = 0; i < samples.length; i++) sumSquares += samples[i] * samples[i];
-  return Math.sqrt(sumSquares / samples.length);
-}
+/**
+ * Simple linear-interpolation resampler — deliberately not the
+ * OfflineAudioContext-based approach used elsewhere in this app for
+ * one-shot exports: this runs on every ~85-256ms audio block in real time,
+ * and creating a new OfflineAudioContext that often would be far too slow.
+ * Speech recognition tolerates the minor quality loss from a fast
+ * approximate resample fine; perfect audio fidelity isn't the goal here.
+ */
+function resampleLinear(input, inputRate, outputRate) {
+  if (inputRate === outputRate) return new Float32Array(input);
 
-async function resampleTo16kMono(float32Samples, originalSampleRate) {
-  if (originalSampleRate === TARGET_SAMPLE_RATE) return float32Samples;
-
-  const targetLength = Math.ceil(float32Samples.length * (TARGET_SAMPLE_RATE / originalSampleRate));
-  const offlineCtx = new OfflineAudioContext(1, targetLength, TARGET_SAMPLE_RATE);
-  const sourceBuffer = offlineCtx.createBuffer(1, float32Samples.length, originalSampleRate);
-  sourceBuffer.copyToChannel(float32Samples, 0);
-
-  const source = offlineCtx.createBufferSource();
-  source.buffer = sourceBuffer;
-  source.connect(offlineCtx.destination);
-  source.start();
-
-  const rendered = await offlineCtx.startRendering();
-  return rendered.getChannelData(0);
-}
-
-/** Encodes 32-bit float PCM samples into a standard 16-bit PCM WAV file. */
-function encodeWavPcm16(float32Samples, sampleRate) {
-  const buffer = new ArrayBuffer(44 + float32Samples.length * 2);
-  const view = new DataView(buffer);
-
-  writeAscii(view, 0, 'RIFF');
-  view.setUint32(4, 36 + float32Samples.length * 2, true);
-  writeAscii(view, 8, 'WAVE');
-  writeAscii(view, 12, 'fmt ');
-  view.setUint32(16, 16, true); // PCM chunk size
-  view.setUint16(20, 1, true); // audio format = PCM
-  view.setUint16(22, 1, true); // channels = 1 (mono)
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true); // byte rate
-  view.setUint16(32, 2, true); // block align
-  view.setUint16(34, 16, true); // bits per sample
-  writeAscii(view, 36, 'data');
-  view.setUint32(40, float32Samples.length * 2, true);
-
-  let offset = 44;
-  for (let i = 0; i < float32Samples.length; i++) {
-    const clamped = Math.max(-1, Math.min(1, float32Samples[i]));
-    view.setInt16(offset, clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff, true);
-    offset += 2;
+  const ratio = inputRate / outputRate;
+  const outputLength = Math.floor(input.length / ratio);
+  const output = new Float32Array(outputLength);
+  for (let i = 0; i < outputLength; i++) {
+    const srcIndex = i * ratio;
+    const srcIndexFloor = Math.floor(srcIndex);
+    const frac = srcIndex - srcIndexFloor;
+    const s0 = input[srcIndexFloor] ?? 0;
+    const s1 = input[srcIndexFloor + 1] ?? s0;
+    output[i] = s0 + (s1 - s0) * frac;
   }
-
-  return buffer;
-}
-
-function writeAscii(view, offset, text) {
-  for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i));
+  return output;
 }

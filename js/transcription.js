@@ -1,13 +1,14 @@
 'use strict';
 
-import { WhisperWasmProvider } from './transcription/whisperWasm.js';
+import { SherpaAsrProvider } from './transcription/sherpaAsr.js';
 import { WebSpeechProvider } from './transcription/webSpeech.js';
 
-// Priority order: Whisper WASM is the only fully-offline, on-device engine
-// left once whisper.cpp/faster-whisper are removed (both required spawning
-// a native binary, impossible in a browser sandbox). Web Speech API remains
-// the disclosed, non-offline last resort.
-const PROVIDER_CHAIN = [WhisperWasmProvider, WebSpeechProvider];
+// Priority order: Sherpa-ONNX ASR is the primary fully-offline, on-device
+// engine (replaces the earlier Whisper WASM integration entirely, which
+// crashed reliably on real device testing — see sherpaAsr.js's file
+// header for the full evidence trail). Web Speech API remains the
+// disclosed, non-offline last resort.
+const PROVIDER_CHAIN = [SherpaAsrProvider, WebSpeechProvider];
 
 /**
  * The single object the rest of the renderer talks to for live

@@ -211,7 +211,7 @@ async function startFullRecording(meeting, mode, settings) {
       showToast(`Failed to save recording chunk: ${error.message}`, 'error');
     }
   });
-  audioEngine.addEventListener('chunk-ready', ({ detail }) => {
+  audioEngine.addEventListener('pcm-frame', ({ detail }) => {
     transcriptionManager.submitAudioChunk(detail);
   });
 
@@ -220,7 +220,6 @@ async function startFullRecording(meeting, mode, settings) {
   // If the user cancels that picker, getDisplayMedia() rejects and we land
   // in startRecording()'s catch block like any other start failure.
   await audioEngine.start(mode, {
-    speakerChangeSilenceMs: settings?.transcriptionPreferences?.speakerChangeSilenceMs ?? 700,
     audioBitsPerSecond: QUALITY_BITRATES[quality] ?? QUALITY_BITRATES.standard,
   });
 

@@ -1,54 +1,62 @@
 # Local AI Engine Setup
 
 MeetingScribe is a browser-only Progressive Web App. It ships with a
-built-in heuristic summarizer and works for recording/transcript editing
-with zero setup, but the strongest offline transcription engine (Whisper
-WASM) and local LLM summaries both need a short one-time setup, described
-below.
+built-in heuristic summarizer, real on-device speaker diarization, and the
+primary offline transcription engine (Sherpa-ONNX ASR) all with **zero
+setup** — every model is committed directly into this repo. Only local LLM
+summaries (optional, via Ollama or llama.cpp) need any setup at all,
+described below.
 
 **If you used the desktop (Electron) version before:** whisper.cpp and
 faster-whisper setup (previously Options A and B here) are gone. Neither
 can run in a browser under any circumstances — both require spawning a
 native binary/subprocess, which no browser sandbox permits, for any web
-page, ever. Whisper WASM is now the primary offline engine.
+page, ever.
 
-## Option A — Whisper WASM (runs inside the browser tab, fully offline)
+**If you tried the Whisper WASM setup from an earlier version of this
+app:** it's been removed entirely. It relied on a third-party WebAssembly
+build (`@timur00kh/whisper.wasm`) that crashed reliably and immediately on
+real device testing — confirmed not to be a configuration problem on our
+end (short chunks, thread count, and model size were all ruled out one by
+one with real evidence) but a deeper incompatibility with the compiled
+binary itself. Sherpa-ONNX ASR replaces it.
 
-This runs whisper.cpp compiled to WebAssembly, entirely inside a Web
-Worker in this page, via a vendored library
-([@timur00kh/whisper.wasm](https://github.com/timur00kh/whisper.wasm),
-MIT) — no external process, no network request once the model is cached.
+## Sherpa-ONNX ASR — the primary offline transcription engine
 
-**No computer, no manual file setup needed at all — this can be done
-entirely from your phone.** Unlike the very first version of this setup:
+Runs entirely inside a Web Worker in this page — no external process, no
+network request, no setup. The engine and its model are committed
+directly into this repo (`assets/speech-recognition/`), so there is
+nothing to download, configure, or enable; it's simply on by default (see
+Settings → AI Engines to turn it off if you ever need to).
 
-1. Open **Settings → AI Engines**.
-2. Under **Whisper WASM**, pick a model size from the dropdown. `base.en`
-   is a reasonable default balance of speed/accuracy/size; `tiny.en` is
-   smaller and faster but less accurate; `small.en` is the most accurate
-   but the slowest and largest download.
-3. Click **Download & enable**.
-4. Wait for the progress bar — this is a real download (75MB-466MB
-   depending on the model you picked), so it'll take a while on a slow
-   connection, but it only happens once. The model is cached in this
-   browser's own storage afterward.
-5. Once it finishes, "Whisper WASM" shows as detected, and it becomes the
-   active transcription engine automatically the next time you record.
+This is a genuinely different kind of engine from the old Whisper WASM
+integration, not just a replacement with the same shape: it has **real,
+built-in endpoint detection** — an acoustic signal for "this utterance just
+ended" — rather than guessing from silence gaps the way both the old
+Whisper integration and Web Speech's continuous mode effectively did. That
+built-in detection is what actually fixes repeated/stacked words in the
+live transcript: text is only ever committed once the engine itself
+confirms an utterance boundary, not as a still-growing, not-yet-finalized
+guess.
 
-**Why this used to require a computer, and doesn't anymore:** the earlier
-approach required manually building or extracting three specific files
-(`whisper.js`, `whisper.wasm`, a renamed model file) and pushing them into
-this repo by hand. This library instead fetches model weights directly
-from Hugging Face and caches them in this browser's IndexedDB storage
-itself — so the "one-time setup" now happens on whatever device is
-actually running the app, no separate computer step required.
+It's also the same underlying toolkit
+([k2-fsa/sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx), Apache-2.0)
+as the speaker-diarization feature — already proven to run successfully in
+this exact browser/device environment before this integration was ever
+attempted, which is part of why it was chosen over other options.
 
-**If you want to switch models later** (e.g. try a more accurate one),
-just pick a different one in the dropdown and click **Download & enable**
-again — each model size is cached independently, so switching back is
-instant if you've downloaded it before.
+**Why the model is split into multiple files:** the model data is
+~191MB, which exceeds GitHub's 100MB-per-file limit for a normal git push.
+Confirmed directly (checking response headers) that GitHub's release-asset
+host doesn't send CORS headers either, so the browser couldn't fetch it
+from there at runtime — the same class of problem that blocked the old
+Whisper model's Hugging Face download path. Splitting the file into
+`<100MB` parts, committing them into this same repo, and reassembling them
+via same-origin `fetch()` calls at load time sidesteps depending on any
+third-party host's CORS policy at all — see `sherpaAsrWorker.js`'s file
+header for the implementation.
 
-## Option B — Web Speech API (last resort — reads the disclosure first)
+## Option A — Web Speech API (last resort — reads the disclosure first)
 
 Uses the browser's built-in speech recognition. **This is the one feature
 in MeetingScribe that is not offline** — your microphone audio is sent to
@@ -98,10 +106,10 @@ developer console for a blocked-by-CORS error to confirm.
 
 ## Nothing installed?
 
-MeetingScribe still works fully: recording, the transcript editor, meeting
-library, search, playback, and all 7 export formats all work with zero
-setup. Summaries fall back automatically to a built-in heuristic summarizer
+MeetingScribe works fully with zero setup: recording, live transcription
+(Sherpa-ONNX ASR, on by default), speaker diarization, the transcript
+editor, meeting library, search, playback, and all 7 export formats.
+Summaries fall back automatically to a built-in heuristic summarizer
 (word-frequency scoring, keyword clustering, and pattern matching for
-decisions/risks/questions/action items) — no LLM, no network, no setup.
-Live transcription will show a banner explaining that no engine is
-configured until you complete Option A or B above.
+decisions/risks/questions/action items) if no local LLM is configured —
+no LLM, no network, no setup.

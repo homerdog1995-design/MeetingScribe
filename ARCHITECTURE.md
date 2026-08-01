@@ -10,8 +10,10 @@ biggest changes, up front:
   renderer process split, no IPC, no `preload.js`.
 - SQLite (`better-sqlite3`) is gone. All data lives in IndexedDB.
 - whisper.cpp and faster-whisper are gone. Neither can run in a browser
-  under any circumstances (both require spawning a native binary). Whisper
-  WASM is now the primary offline transcription engine.
+  under any circumstances (both require spawning a native binary). The
+  primary offline transcription engine is now Sherpa-ONNX ASR (replacing an
+  earlier, since-removed Whisper WASM integration that crashed reliably on
+  real device testing — see §4).
 - There is no filesystem. Recordings are Blobs in IndexedDB; exports are
   browser downloads; backups are a single JSON file.
 - The app is installable (via `manifest.json`) and works offline (via
@@ -32,10 +34,11 @@ imports — there is no IPC layer to cross, because there is no second
 process. `storage.js` (IndexedDB), `settingsStore.js`, and `backup.js` are
 called directly, in-process, by whichever UI module needs them.
 
-A **Web Worker** (`js/transcription/whisperWasmWorker.js`) is the one
-exception to "single context" — Whisper WASM inference runs there so a
-transcription pass never blocks the UI thread. It communicates with the
-main thread via `postMessage`, not IPC.
+**Web Workers** are the one exception to "single context" —
+`js/transcription/sherpaAsrWorker.js` (speech recognition) and
+`js/diarizationWorker.js` (speaker diarization) each run their WASM engine
+in a dedicated worker so neither ever blocks the UI thread. They
+communicate with the main thread via `postMessage`, not IPC.
 
 A **Service Worker** (`service-worker.js`) is the other background context.
 It only handles caching static assets for offline use; it has no access to
@@ -89,31 +92,42 @@ know which one is active.
 **What changed:** the provider chain used to be
 `[whisper.cpp, faster-whisper, Whisper WASM, Web Speech API]`. The first two
 are gone — both require spawning a native binary/subprocess, which no
-browser permits under any circumstances, for any app, ever. The chain is
-now:
+browser permits under any circumstances, for any app, ever. Whisper WASM
+(a third-party WebAssembly build, `@timur00kh/whisper.wasm`) was also
+removed entirely after real device testing confirmed it crashed reliably
+and immediately, on every model size tried, even after ruling out chunk
+length and thread count as the cause one by one with real evidence — not
+a configuration problem on this app's side, but a deeper incompatibility
+with that specific compiled binary. The chain is now:
 
 ```
-[Whisper WASM, Web Speech API]
+[Sherpa-ONNX ASR, Web Speech API]
 ```
 
-Whisper WASM (`whisperWasm.js` / `whisperWasmWorker.js`) runs whisper.cpp
-compiled to WebAssembly, entirely inside a Worker, entirely offline. It's
-built on a vendored library
-([@timur00kh/whisper.wasm](https://github.com/timur00kh/whisper.wasm),
-MIT — `assets/whisper-wasm-lib/`) rather than a hand-rolled integration
-against the raw Emscripten API. This matters for setup: the library's
-`ModelManager` fetches model weights directly from Hugging Face and caches
-them in IndexedDB itself, triggered by a "Download & enable" button in
-Settings — no manual file building/placement, no computer required at all,
-unlike the very first version of this integration (which needed three
-specific files built/extracted and pushed into this repo by hand). See
-`docs/MODEL_SETUP.md`, Option A.
+**Sherpa-ONNX ASR** (`transcription/sherpaAsr.js` /
+`transcription/sherpaAsrWorker.js`) runs a streaming Zipformer ASR model
+via a vendored build of [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)
+(Apache-2.0, `assets/speech-recognition/`) — the same toolkit as the
+speaker-diarization feature (§12), already proven to run successfully in
+real device testing before this integration was attempted. Unlike the old
+Whisper WASM integration (which processed discrete, pre-chunked WAV
+buffers), this engine is fed a **continuous stream of small raw audio
+frames** (see audio.js's `pcm-frame` event) and has **real, built-in
+endpoint detection** — an acoustic signal for "this utterance just
+ended," not a guess from silence gaps. That's what actually fixes
+repeated/stacked words in the live transcript: text is only ever
+committed once the engine itself confirms an utterance boundary. No setup
+is needed — the engine and model are committed directly into this repo
+(split into <100MB parts and reassembled via same-origin `fetch()` at load
+time, since the ~191MB model exceeds GitHub's per-file push limit and its
+release-asset host doesn't send CORS headers — see `sherpaAsrWorker.js`'s
+file header). It's on by default; Settings → AI Engines can turn it off.
 
 Web Speech API remains the last-resort, explicitly-disclosed, non-offline
 fallback (see §9) — and, per real device testing, has a genuine
 architectural limitation of its own: it can't reliably share a microphone
 with this app's own recording pipeline (see §9's transcript-only mode
-note), whereas Whisper WASM never has that problem, since it processes
+note), whereas Sherpa ASR never has that problem, since it processes
 audio through the same stream this app already captures.
 
 ## 5. Speaker identification
@@ -166,13 +180,17 @@ Works immediately, no setup: recording (mic/system/mixed, subject to §10's
 browser capture caveats), the meeting library, transcript editor (undo/redo,
 find/replace, highlights, comments, bookmarks, version history, autosave),
 speaker management, search, all 7 export formats, backups (single JSON
-file), the heuristic (non-LLM) summarizer, and **true acoustic speaker
+file), the heuristic (non-LLM) summarizer, **Sherpa-ONNX ASR** (the
+primary offline transcription engine — real built-in endpoint detection,
+nothing to set up, on by default; see §4), and **true acoustic speaker
 diarization** (a vendored sherpa-onnx WebAssembly build — pyannote speech
 segmentation + a speaker-embedding network, clustered on-device; see §12).
 
-Requires one-time setup (see `docs/MODEL_SETUP.md`): Whisper WASM (build/
-place 3 files), Ollama or llama.cpp for LLM summaries (plus the CORS
-configuration from §6).
+Only local LLM summaries need any setup at all (see `docs/MODEL_SETUP.md`):
+Ollama or llama.cpp (plus the CORS configuration from §6). Everything
+else — including both on-device AI engines — works with zero setup, since
+their models are committed directly into this repo rather than requiring
+a per-user download.
 
 ## 9. Web Speech API — explicit disclosure
 
@@ -200,10 +218,12 @@ too: the standard `SpeechRecognition` API has no way to accept a custom
   what "global" meant, and no browser can replicate it (a page receiving
   keystrokes meant for other windows would be a serious security hole). See
   `hotkeys.js`.
-- **Whisper WASM's model download is a real, sizable one-time cost**
-  (75MB-466MB depending on model size), fetched from Hugging Face on first
-  use and cached in IndexedDB afterward. Slow on a poor connection, but it
-  only happens once per model size chosen.
+- **Sherpa ASR's model is a real, sizable download** (~191MB, split into
+  parts — see §4), fetched lazily the first time a recording actually
+  starts (not on page load — same deliberate lazy-loading choice as the
+  diarization assets, so visiting the app doesn't force a huge download
+  before anyone's used a feature that needs it) and cached by the service
+  worker afterward for offline reuse.
 - **PDF export opens the browser's print dialog** instead of silently
   writing a file — there is no browser equivalent of Electron's
   `webContents.printToPDF`. The user picks "Save as PDF" as the print

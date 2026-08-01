@@ -472,9 +472,6 @@ body[data-theme="dark"] .transcript-editor .segment-text.highlighted { backgroun
 .settings-actions { display: flex; gap: 8px; margin-top: 12px; }
 .storage-stats { display: flex; gap: 22px; margin-top: 10px; font-size: 13px; color: var(--color-ink-muted); }
 .storage-stats strong { color: var(--color-ink); display: block; font-size: 16px; }
-.progress-track { height: 6px; border-radius: 999px; background: var(--color-border); margin-top: 8px; overflow: hidden; }
-.progress-track.hidden { display: none; }
-.progress-fill { height: 100%; width: 0%; background: var(--color-accent); transition: width 150ms ease; }
 .engine-detection-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
 .engine-detection-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .engine-detection-row .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-ink-faint); }

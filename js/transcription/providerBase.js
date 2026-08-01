@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Contract implemented by every transcription provider (whisperWasm.js,
+ * Contract implemented by every transcription provider (sherpaAsr.js,
  * webSpeech.js — whisperCpp.js/fasterWhisper.js existed in the desktop
  * version but were removed entirely; see transcription.js's file header).
  *

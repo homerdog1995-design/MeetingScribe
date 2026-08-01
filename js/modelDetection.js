@@ -5,17 +5,16 @@
  * modelDetection.js. The original scanned the filesystem for whisper.cpp/
  * faster-whisper binaries; none of that filesystem access exists in a
  * browser. What's left:
- *   - Whisper WASM: no longer a file-existence check. Since switching to
- *     @timur00kh/whisper.wasm (see whisperWasm.js's file header), the model
- *     is fetched and cached in IndexedDB by the library itself, triggered
- *     from Settings — there are no files to look for on a fixed path
- *     anymore. "Detected" just means the user has successfully downloaded
- *     and enabled a model at least once (settings.engines.whisperWasm.enabled).
+ *   - Sherpa ASR: a fetch() HEAD check against the vendored engine files,
+ *     plus the settings enable/disable flag (see sherpaAsr.js). Unlike the
+ *     earlier Whisper WASM integration, there's no per-user download step —
+ *     the engine files are committed directly into this repo — so this
+ *     should normally always be true unless the user has explicitly
+ *     disabled it or a deployment issue is genuinely missing the files.
  *   - Web Speech API: a capability check (is SpeechRecognition present in
  *     this browser) plus whether the user has enabled + acknowledged it.
  *   - Speaker diarization: a fetch() HEAD check against the vendored
- *     sherpa-onnx assets, which — unlike Whisper WASM — are committed
- *     directly into this repo, so this should normally always be true.
+ *     sherpa-onnx diarization assets, also committed directly into this repo.
  *   - Ollama / llama.cpp: unchanged in spirit (HTTP reachability checks),
  *     but now via the page's own fetch() rather than Node's HTTP client —
  *     see summaryEngine.js's file header for the CORS caveat this implies.
@@ -24,6 +23,16 @@
 import { settingsStore } from './settingsStore.js';
 import { detectAvailableLlm } from './summaryEngine.js';
 import { isAvailable as isDiarizationAvailable } from './diarization.js';
+
+async function detectSherpaAsr(settings) {
+  if (!settings.engines.sherpaAsr.enabled) return { available: false };
+  try {
+    const response = await fetch('./assets/speech-recognition/sherpa-onnx-wasm-main-asr.js', { method: 'HEAD' });
+    return { available: response.ok };
+  } catch {
+    return { available: false };
+  }
+}
 
 async function detectWebSpeech(settings) {
   const supported = Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
@@ -35,13 +44,14 @@ async function detectWebSpeech(settings) {
 
 export async function detectAll() {
   const settings = await settingsStore.get();
-  const [webSpeech, llm, diarization] = await Promise.all([
+  const [sherpaAsr, webSpeech, llm, diarization] = await Promise.all([
+    detectSherpaAsr(settings),
     detectWebSpeech(settings),
     detectAvailableLlm(),
     isDiarizationAvailable(),
   ]);
   return {
-    whisperWasm: { available: Boolean(settings.engines.whisperWasm.enabled && settings.engines.whisperWasm.active), modelId: settings.engines.whisperWasm.modelId },
+    sherpaAsr,
     webSpeech,
     ollama: llm.ollama,
     llamaCpp: llm.llamaCpp,

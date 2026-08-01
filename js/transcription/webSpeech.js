@@ -62,15 +62,18 @@ export class WebSpeechProvider extends TranscriptionProvider {
     // transcript). Reset per session since each new recognition object
     // starts its own fresh results array.
     this._lastProcessedResultIndex = -1;
+    this._lastCommittedFinalText = null;
 
     const recognition = new SpeechRecognitionImpl();
     recognition.continuous = true;
-    // interimResults is now on purely for diagnostics: onresult below still
-    // only ever turns *final* results into segments, but seeing an interim
-    // result tells us the recognizer is actually hearing something, which
-    // is exactly the distinction needed when nothing is coming through at
-    // all — "hears nothing" and "hears speech but never finalizes it" look
-    // identical from the outside otherwise.
+    // interimResults stays on purely for diagnostics and the stall
+    // watchdog below — interim hypotheses are never appended anywhere,
+    // never displayed, and never persisted. Only results where
+    // isFinal === true are ever turned into a segment, and only once each
+    // (see _lastProcessedResultIndex/_lastCommittedFinalText below) — this
+    // is what actually prevents a still-growing, not-yet-finalized
+    // hypothesis from being committed multiple times as it grows, which is
+    // what repeated/stacked words in the transcript actually was.
     recognition.interimResults = true;
     recognition.lang = this._language;
 
@@ -90,6 +93,16 @@ export class WebSpeechProvider extends TranscriptionProvider {
         this._lastProcessedResultIndex = i;
         const text = result[0].transcript.trim();
         if (!text) continue;
+        // Belt-and-braces: even among results Chrome marks as genuinely
+        // final, a later one can occasionally be a growing revision of the
+        // text just committed (editor.js also guards against this
+        // downstream, but catching it here means it never leaves this
+        // provider as a duplicate in the first place).
+        if (this._lastCommittedFinalText && text.startsWith(this._lastCommittedFinalText)) {
+          this._lastCommittedFinalText = text;
+          continue;
+        }
+        this._lastCommittedFinalText = text;
         logger.info('webSpeech', 'Final result committed as a segment', { text });
         const nowMs = performance.now() - this._sessionStartPerfMs;
         this.dispatchEvent(new CustomEvent('segment', {
@@ -138,7 +151,7 @@ export class WebSpeechProvider extends TranscriptionProvider {
       logger.warn('webSpeech', `No recognition activity at all for ${STALL_WATCHDOG_MS}ms`);
       this.dispatchEvent(new CustomEvent('error', {
         detail: {
-          message: 'Web Speech API has produced no results for several seconds. Check Settings → View diagnostics log for details, or try Whisper WASM instead.',
+          message: 'Web Speech API has produced no results for several seconds. Check Settings → View diagnostics log for details, or try Sherpa-ONNX ASR instead.',
           fatal: false,
         },
       }));

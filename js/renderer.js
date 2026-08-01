@@ -124,6 +124,10 @@ function wireMeetingHeaderActions() {
   qs('#btn-duplicate-meeting').addEventListener('click', async () => {
     const meeting = store.get('currentMeeting');
     if (!meeting) return;
+    if (store.get('recording.status') !== 'idle') {
+      showToast('Stop the recording before duplicating this meeting.', 'info');
+      return;
+    }
     const duplicate = await storage.duplicateMeeting(meeting.id);
     showToast('Meeting duplicated.', 'success');
     store.set('currentMeeting', duplicate);

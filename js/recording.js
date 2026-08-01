@@ -187,6 +187,16 @@ async function startFullRecording(meeting, mode, settings) {
   currentMeetingId = meeting.id;
   lastMasterChunkIndex = -1;
 
+  // Captured once, here, rather than read from the mutable module-level
+  // currentSessionId/currentMeetingId inside the listeners below — those
+  // variables get reassigned by whatever recording starts *next*, and a
+  // listener reading them live would silently pick up a different
+  // recording's session if this engine somehow outlived its own recording
+  // (e.g. a stop() that didn't fully tear down in time). Local constants
+  // guarantee this listener only ever refers to the session it was made for.
+  const sessionIdForThisEngine = session.sessionId;
+  const meetingIdForThisEngine = meeting.id;
+
   audioEngine = new AudioEngine();
   audioEngine.addEventListener('level', ({ detail }) => {
     e.levelMic.style.width = `${Math.round(detail.mic * 100)}%`;
@@ -196,7 +206,7 @@ async function startFullRecording(meeting, mode, settings) {
     lastMasterChunkIndex = detail.index;
     try {
       const blob = new Blob([detail.arrayBuffer], { type: 'audio/webm' });
-      await storage.saveMasterChunk(currentSessionId, currentMeetingId, detail.index, blob);
+      await storage.saveMasterChunk(sessionIdForThisEngine, meetingIdForThisEngine, detail.index, blob);
     } catch (error) {
       showToast(`Failed to save recording chunk: ${error.message}`, 'error');
     }

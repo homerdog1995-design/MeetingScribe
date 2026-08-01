@@ -46,6 +46,10 @@ export function initLibrary() {
 }
 
 async function createNewMeeting() {
+  if (store.get('recording.status') !== 'idle') {
+    showToast('Stop the current recording before starting a new meeting.', 'info');
+    return;
+  }
   const settings = store.get('settings');
   const meeting = await storage.createMeeting({ quality: settings?.recordingQuality || 'standard' });
   store.set('currentMeeting', meeting);
@@ -53,6 +57,10 @@ async function createNewMeeting() {
 }
 
 export async function openMeetingById(id) {
+  if (store.get('recording.status') !== 'idle') {
+    showToast('Stop the current recording before opening a different meeting.', 'info');
+    return;
+  }
   const meeting = await storage.getMeeting(id);
   if (!meeting) { showToast('That meeting could not be found — it may have been deleted.', 'error'); return; }
   store.set('currentMeeting', meeting);

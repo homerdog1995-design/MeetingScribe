@@ -30,6 +30,7 @@ export class SherpaAsrProvider extends TranscriptionProvider {
     this._queue = Promise.resolve();
     this._consecutiveFailures = 0;
     this._pendingFrameCount = 0;
+    this._hasObservedSignalThisUtterance = false; // guards against committing hallucinated text if the model outputs something despite every fed frame being pure silence/ambient noise
   }
 
   get label() { return 'Sherpa-ONNX ASR (on-device)'; }
@@ -52,6 +53,7 @@ export class SherpaAsrProvider extends TranscriptionProvider {
   async start() {
     this._utteranceStartMs = 0;
     this._streamElapsedMs = 0;
+    this._hasObservedSignalThisUtterance = false;
     await this._spawnWorker();
   }
 
@@ -75,14 +77,15 @@ export class SherpaAsrProvider extends TranscriptionProvider {
    * processing can't keep up with real-time audio arrival on a slower
    * device. That's monitored below rather than left invisible.
    */
-  async submitAudioChunk({ samples }) {
+  async submitAudioChunk({ samples, hasSignal }) {
     this._pendingFrameCount += 1;
-    this._queue = this._queue.then(() => this._processFrame(samples));
+    this._queue = this._queue.then(() => this._processFrame(samples, hasSignal));
     return this._queue;
   }
 
-  async _processFrame(samples) {
+  async _processFrame(samples, hasSignal) {
     this._pendingFrameCount -= 1;
+    if (hasSignal) this._hasObservedSignalThisUtterance = true;
     const QUEUE_DEPTH_WARNING_THRESHOLD = 10; // ~1-2s of backlog at typical frame sizes — worth knowing about, not yet a hard problem
     if (this._pendingFrameCount >= QUEUE_DEPTH_WARNING_THRESHOLD && this._pendingFrameCount % 10 === 0) {
       logger.warn('sherpaAsr', 'Processing is falling behind real-time audio — the live transcript may lag noticeably', { pendingFrames: this._pendingFrameCount });
@@ -96,6 +99,24 @@ export class SherpaAsrProvider extends TranscriptionProvider {
       const { text: rawText, isEndpoint } = await this._call('feed', { samples }, [samples.buffer]);
       const text = normalizeCasing(rawText);
       this._consecutiveFailures = 0;
+      // Confirmed via real device testing: this class of streaming model
+      // can hallucinate short, plausible-sounding filler words ("and",
+      // "the") from pure silence/ambient noise, especially with beam
+      // search actively searching for higher-scoring output rather than
+      // committing to blank/silence. Regardless of the exact cause,
+      // trusting output the engine claims is final when every fed frame
+      // this utterance was genuinely below the noise floor would mean
+      // inserting fabricated content into a meeting transcript, which is
+      // worse than briefly missing a word. This is deliberately
+      // independent of the audio-preprocessing fix (audio.js's
+      // NOISE_FLOOR_RMS) — a second, cheap safeguard, not a replacement
+      // for getting the input-side fix right.
+      if (isEndpoint && text && !this._hasObservedSignalThisUtterance) {
+        logger.warn('sherpaAsr', 'Discarded likely-hallucinated result — no real signal observed this utterance', { text });
+        this._utteranceStartMs = frameStartMs + frameDurationMs;
+        this._hasObservedSignalThisUtterance = false;
+        return;
+      }
       if (isEndpoint && text) {
         this.dispatchEvent(new CustomEvent('segment', {
           detail: {
@@ -109,6 +130,7 @@ export class SherpaAsrProvider extends TranscriptionProvider {
       }
       if (isEndpoint) {
         this._utteranceStartMs = frameStartMs + frameDurationMs;
+        this._hasObservedSignalThisUtterance = false;
       }
     } catch (error) {
       this._consecutiveFailures += 1;

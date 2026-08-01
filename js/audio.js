@@ -239,8 +239,8 @@ export class AudioEngine extends EventTarget {
     this._streamNode.onaudioprocess = (event) => {
       const input = event.inputBuffer.getChannelData(0);
       const resampled = resampleLinear(input, this.audioContext.sampleRate, TARGET_SAMPLE_RATE);
-      const normalized = normalizeGain(resampled);
-      this.dispatchEvent(new CustomEvent('pcm-frame', { detail: { samples: normalized } }));
+      const { samples: normalized, hasSignal } = normalizeGain(resampled);
+      this.dispatchEvent(new CustomEvent('pcm-frame', { detail: { samples: normalized, hasSignal } }));
     };
   }
 
@@ -266,19 +266,21 @@ function rmsFromByteTimeDomain(byteData) {
 }
 
 const TARGET_RMS = 0.08; // a reasonable target loudness for typical speech, matching what these models are generally trained on
-const MAX_NORMALIZATION_GAIN = 6; // caps how much a very quiet frame can be boosted, so near-silence/noise floor doesn't get amplified into audible artifacts
+const NOISE_FLOOR_RMS = 0.012; // below this, treat it as ambient room noise/mic self-noise rather than quiet speech — confirmed via real device testing that a too-low threshold here (1e-4, essentially only true digital silence) let real ambient noise get amplified into the model's hearing range, causing hallucinated repeated words during actual silence
+const MAX_NORMALIZATION_GAIN = 3; // lowered from 6 as an additional safety margin against amplifying noise into audible/model-perceptible artifacts
 
-/** Boosts (or gently attenuates) a frame toward a consistent target loudness, based on its RMS energy. */
+/** Boosts (or gently attenuates) a frame toward a consistent target loudness, based on its RMS energy. Also reports whether the frame had any real signal above the noise floor, for use as an independent guard against committing hallucinated ASR output during actual silence. */
 function normalizeGain(samples) {
   let sumSquares = 0;
   for (let i = 0; i < samples.length; i++) sumSquares += samples[i] * samples[i];
   const rms = Math.sqrt(sumSquares / samples.length);
-  if (rms < 1e-4) return samples; // effectively silent — nothing meaningful to normalize, and boosting here would just amplify the noise floor
+  const hasSignal = rms >= NOISE_FLOOR_RMS;
+  if (!hasSignal) return { samples, hasSignal }; // ambient noise or silence — leave it exactly as captured rather than amplifying it into something the model might mistake for quiet speech
   const gain = Math.min(TARGET_RMS / rms, MAX_NORMALIZATION_GAIN);
-  if (Math.abs(gain - 1) < 0.05) return samples; // already close enough — skip the redundant pass
+  if (Math.abs(gain - 1) < 0.05) return { samples, hasSignal }; // already close enough — skip the redundant pass
   const output = new Float32Array(samples.length);
   for (let i = 0; i < samples.length; i++) output[i] = clamp(samples[i] * gain, -1, 1);
-  return output;
+  return { samples: output, hasSignal };
 }
 
 /**

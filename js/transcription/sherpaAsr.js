@@ -64,7 +64,8 @@ export class SherpaAsrProvider extends TranscriptionProvider {
     this._worker.onerror = (event) => {
       this.dispatchEvent(new CustomEvent('error', { detail: { message: event.message || 'Sherpa ASR worker crashed', fatal: true } }));
     };
-    await this._call('load', {});
+    const settings = await settingsStore.get();
+    await this._call('load', { modelId: settings.engines.sherpaAsr.modelId || 'tiny.en' });
   }
 
   /**
@@ -180,7 +181,12 @@ export class SherpaAsrProvider extends TranscriptionProvider {
   }
 
   _handleWorkerMessage(data) {
-    if (data.type === 'progress') return; // only relevant to a future model-download-progress UI, if ever needed — the model is committed directly into the repo, so there's no per-user download step to show progress for
+    if (data.type === 'progress') return;
+    if (data.type === 'model-fallback') {
+      logger.warn('sherpaAsr', 'Higher-accuracy model unavailable, using bundled model', { message: data.message });
+      this.dispatchEvent(new CustomEvent('error', { detail: { message: 'The higher-accuracy model could not be loaded, so the standard model is being used instead.', fatal: false } }));
+      return;
+    } // only relevant to a future model-download-progress UI, if ever needed — the model is committed directly into the repo, so there's no per-user download step to show progress for
     const pending = this._pending.get(data.requestId);
     if (!pending) return;
     this._pending.delete(data.requestId);

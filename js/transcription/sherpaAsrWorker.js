@@ -39,8 +39,29 @@
 // not the site root — fetch()/importScripts() inside a Worker resolve
 // against the worker's own script URL, not the page that created it.
 const ASSET_BASE = '../../assets/speech-recognition/';
+const BASE_EN_ASSET_BASE = '../../assets/whisper-base-en/';
 const DATA_PARTS = ['sherpa-onnx-wasm-main-vad-asr.data.part00', 'sherpa-onnx-wasm-main-vad-asr.data.part01'];
 const SAMPLE_RATE = 16000;
+
+/**
+ * The larger base.en model is NOT baked into the WASM bundle (only tiny.en
+ * is, since that's what sherpa-onnx ships prebuilt). Instead its ONNX files
+ * are vendored separately in this repo and written into the WASM virtual
+ * filesystem at runtime via Module.FS_createDataFile — an explicitly
+ * exported Emscripten runtime method, verified present in this build. That
+ * avoids needing a computer with Emscripten to compile a custom bundle.
+ *
+ * Trade-off, disclosed in Settings: the bundled tiny.en model is loaded
+ * regardless (the Silero VAD model lives in the same bundle and can't be
+ * separated), so choosing base.en means downloading both — roughly 263MB
+ * total rather than 103MB. It's cached afterward and only downloaded if
+ * the user opts in.
+ */
+const BASE_EN_FILES = {
+  encoder: { name: 'base.en-encoder.int8.onnx', parts: ['base.en-encoder.int8.onnx'] },
+  decoder: { name: 'base.en-decoder.int8.onnx', parts: ['base.en-decoder.int8.onnx.part00', 'base.en-decoder.int8.onnx.part01'] },
+  tokens: { name: 'base.en-tokens.txt', parts: ['base.en-tokens.txt'] },
+};
 
 let recognizer = null;
 let vad = null;
@@ -70,17 +91,40 @@ function waitForRuntime() {
   });
 }
 
-/** Mirrors the model-detection pattern from sherpa-onnx's own demo: the .data package bundles whisper-encoder.onnx/whisper-decoder.onnx/tokens.txt at the virtual filesystem root. */
-function createWhisperRecognizer() {
+/** Fetches the vendored base.en model parts and writes them into the WASM virtual filesystem, so the recognizer can reference them by path exactly like the bundled tiny.en files. */
+async function installBaseEnModel(onProgress) {
+  let completed = 0;
+  const totalFiles = Object.keys(BASE_EN_FILES).length;
+  for (const spec of Object.values(BASE_EN_FILES)) {
+    const buffers = [];
+    for (const partName of spec.parts) {
+      const response = await fetch(`${BASE_EN_ASSET_BASE}${partName}`);
+      if (!response.ok) throw new Error(`Failed to fetch ${partName} (HTTP ${response.status})`);
+      buffers.push(new Uint8Array(await response.arrayBuffer()));
+    }
+    const totalLength = buffers.reduce((sum, b) => sum + b.length, 0);
+    const merged = new Uint8Array(totalLength);
+    let offset = 0;
+    for (const b of buffers) { merged.set(b, offset); offset += b.length; }
+    self.Module.FS_createDataFile('/', spec.name, merged, true, true, true);
+    completed += 1;
+    onProgress?.(completed, totalFiles);
+  }
+}
+
+/**
+ * tiny.en (and tokens.txt) are bundled in the WASM .data package at the
+ * virtual filesystem root; base.en is installed at runtime by
+ * installBaseEnModel() above, so both end up addressable the same way.
+ */
+function createWhisperRecognizer(modelId) {
+  const whisper = modelId === 'base.en'
+    ? { encoder: './base.en-encoder.int8.onnx', decoder: './base.en-decoder.int8.onnx' }
+    : { encoder: './whisper-encoder.onnx', decoder: './whisper-decoder.onnx' };
+  const tokens = modelId === 'base.en' ? './base.en-tokens.txt' : './tokens.txt';
+
   return new OfflineRecognizer({
-    modelConfig: {
-      debug: 0,
-      tokens: './tokens.txt',
-      whisper: {
-        encoder: './whisper-encoder.onnx',
-        decoder: './whisper-decoder.onnx',
-      },
-    },
+    modelConfig: { debug: 0, tokens, whisper },
   }, self.Module);
 }
 
@@ -103,14 +147,32 @@ self.onmessage = async (event) => {
       );
       await runtimeReady;
 
-      recognizer = createWhisperRecognizer();
+      const modelId = event.data.modelId === 'base.en' ? 'base.en' : 'tiny.en';
+      if (modelId === 'base.en') {
+        try {
+          await installBaseEnModel((done, total) => {
+            self.postMessage({ type: 'progress', requestId, stage: 'model', done, total });
+          });
+        } catch (installError) {
+          // Fall back to the bundled tiny.en rather than failing outright —
+          // the user still gets working transcription, just not the
+          // higher-accuracy model they opted into.
+          self.postMessage({ type: 'model-fallback', requestId, message: installError.message });
+          recognizer = createWhisperRecognizer('tiny.en');
+          vad = createVad(self.Module);
+          circularBuffer = new CircularBuffer(30 * SAMPLE_RATE, self.Module);
+          self.postMessage({ type: 'loaded', requestId, sampleRate: SAMPLE_RATE, modelId: 'tiny.en' });
+          return;
+        }
+      }
+      recognizer = createWhisperRecognizer(modelId);
       vad = createVad(self.Module);
       // Buffers incoming audio until at least one full VAD window is
       // available — frame sizes arriving from audio.js won't line up with
       // the VAD's required window size, and feeding partial windows would
       // desynchronize its speech detection.
       circularBuffer = new CircularBuffer(30 * SAMPLE_RATE, self.Module);
-      self.postMessage({ type: 'loaded', requestId, sampleRate: SAMPLE_RATE });
+      self.postMessage({ type: 'loaded', requestId, sampleRate: SAMPLE_RATE, modelId });
 
     } else if (type === 'feed') {
       if (!recognizer || !vad || !circularBuffer) throw new Error('ASR model is not loaded.');

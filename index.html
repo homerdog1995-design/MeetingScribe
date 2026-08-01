@@ -315,6 +315,21 @@
             <span>Use Whisper for transcription</span>
             <input id="setting-sherpa-asr-enabled" type="checkbox" />
           </label>
+          <label class="settings-row">
+            <span>Model</span>
+            <select id="setting-whisper-model">
+              <option value="tiny.en">Standard — fastest, already included</option>
+              <option value="base.en">Higher accuracy — extra 160MB download, slower</option>
+            </select>
+          </label>
+          <p class="settings-help">
+            The higher-accuracy model is noticeably better at understanding
+            speech, but it's a substantial one-time download on top of what's
+            already bundled (about 260MB in total), and each phrase takes
+            longer to transcribe. It's downloaded the first time you record
+            after selecting it, then cached. If it can't be downloaded, the
+            standard model is used instead rather than failing.
+          </p>
 
           <h3>Web Speech API <span class="badge badge-warning">Not offline</span></h3>
           <p class="settings-help">Sends microphone audio to Google's servers. Off by default.</p>

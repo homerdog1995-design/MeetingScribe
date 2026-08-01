@@ -39,7 +39,7 @@ const DEFAULT_SETTINGS = {
     speakerChangeSilenceMs: 700,
   },
   engines: {
-    sherpaAsr: { enabled: true },
+    sherpaAsr: { enabled: true, modelId: 'tiny.en' },
     webSpeech: { enabled: false, acknowledgedDisclosure: false },
     ollama: { port: 11434 },
     llamaCpp: { port: 8080 },

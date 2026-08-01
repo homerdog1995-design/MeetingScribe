@@ -78,6 +78,7 @@ function populateFields(settings) {
   qs('#setting-webspeech-enabled').checked = Boolean(settings.engines.webSpeech.enabled);
 
   qs('#setting-sherpa-asr-enabled').checked = Boolean(settings.engines.sherpaAsr.enabled);
+  qs('#setting-whisper-model').value = settings.engines.sherpaAsr.modelId || 'tiny.en';
 
   qs('#setting-summary-engine').value = settings.summaryPreferences.preferredEngine;
   qs('#setting-ollama-port').value = settings.engines.ollama.port;
@@ -116,6 +117,7 @@ function wireFieldListeners() {
 
   qs('#setting-webspeech-enabled').addEventListener('change', (e) => handleWebSpeechToggle(e));
   qs('#setting-sherpa-asr-enabled').addEventListener('change', (e) => persistSetting({ engines: { sherpaAsr: { enabled: e.target.checked } } }));
+  qs('#setting-whisper-model').addEventListener('change', (e) => persistSetting({ engines: { sherpaAsr: { modelId: e.target.value } } }));
 
   qs('#setting-summary-engine').addEventListener('change', (e) => persistSetting({ summaryPreferences: { preferredEngine: e.target.value } }));
   qs('#setting-ollama-port').addEventListener('change', (e) => persistSetting({ engines: { ollama: { port: Number(e.target.value) } } }));

@@ -40,8 +40,45 @@
 const ASSET_BASE = '../../assets/speech-recognition/';
 const DATA_PARTS = ['sherpa-onnx-wasm-main-asr.data.part00', 'sherpa-onnx-wasm-main-asr.data.part01', 'sherpa-onnx-wasm-main-asr.data.part02'];
 
+// Decoding tuning — see docs/MODEL_SETUP.md for the reasoning behind each
+// value and how to safely change them. modified_beam_search trades some
+// speed for meaningfully better accuracy than the default greedy_search,
+// which is worth it here since this already runs single-threaded (see
+// sherpaAsr.js's file header on why: no SharedArrayBuffer on GitHub Pages)
+// and the model itself is small/fast enough to absorb the extra cost.
+const DECODING_METHOD = 'modified_beam_search';
+const MAX_ACTIVE_PATHS = 8; // beam width for modified_beam_search — higher = more accurate, slower. 8 is a deliberate middle ground over the default of 4.
+const RULE1_MIN_TRAILING_SILENCE = 2.4; // seconds of trailing silence that ends an utterance even with a very short amount of recognized speech so far
+const RULE2_MIN_TRAILING_SILENCE = 0.8; // seconds of trailing silence that ends an utterance once *some* real speech has been recognized — tightened from the model's default of 1.2s for snappier commits in normal conversation, without going so low it risks cutting off mid-sentence pauses
+const RULE3_MIN_UTTERANCE_LENGTH = 20; // seconds — a hard ceiling so one very long unbroken utterance still eventually commits
+
 let recognizer = null;
 let stream = null;
+
+/**
+ * The library's createOnlineRecognizer(Module, config) REPLACES the whole
+ * config object wholesale rather than merging into the defaults — passing
+ * a partial override would lose the correctly-populated model file paths
+ * (baked in based on which model type this build was compiled for). So
+ * this creates a recognizer once with no override to get those paths
+ * correctly populated, reads them back off the result, then creates the
+ * real recognizer with just the decoding-related fields overridden on top
+ * of that verified-correct base config.
+ */
+function createTunedRecognizer() {
+  const probeRecognizer = createOnlineRecognizer(self.Module);
+  const baseConfig = probeRecognizer.config;
+  probeRecognizer.free();
+
+  return createOnlineRecognizer(self.Module, {
+    ...baseConfig,
+    decodingMethod: DECODING_METHOD,
+    maxActivePaths: MAX_ACTIVE_PATHS,
+    rule1MinTrailingSilence: RULE1_MIN_TRAILING_SILENCE,
+    rule2MinTrailingSilence: RULE2_MIN_TRAILING_SILENCE,
+    rule3MinUtteranceLength: RULE3_MIN_UTTERANCE_LENGTH,
+  });
+}
 
 async function buildReassembledDataUrl(onProgress) {
   const buffers = [];
@@ -83,7 +120,7 @@ self.onmessage = async (event) => {
       importScripts(`${ASSET_BASE}sherpa-onnx-asr.js`, `${ASSET_BASE}sherpa-onnx-wasm-main-asr.js`);
       await runtimeReady;
 
-      recognizer = createOnlineRecognizer(self.Module);
+      recognizer = createTunedRecognizer();
       stream = recognizer.createStream();
       self.postMessage({ type: 'loaded', requestId, sampleRate: 16000 });
     } else if (type === 'feed') {

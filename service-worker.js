@@ -17,7 +17,7 @@
 // content. Browsers only re-check this script byte-for-byte; if this exact
 // string doesn't change, the old cache (and therefore old, stale JS) keeps
 // being served indefinitely even after new code is pushed to the server.
-const CACHE_VERSION = 'meetingscribe-v20';
+const CACHE_VERSION = 'meetingscribe-v21';
 
 const PRECACHE_URLS = [
   './',
@@ -44,6 +44,7 @@ const PRECACHE_URLS = [
   './js/transcription/sherpaAsrWorker.js',
   './js/transcription/webSpeech.js',
   './js/editor.js',
+  './js/transcriptAssembly.js',
   './js/speakers.js',
   './js/summary.js',
   './js/library.js',

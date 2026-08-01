@@ -38,7 +38,6 @@ import { qs, qsa, el, formatTimestamp, showToast, openModal } from './utils.js';
  */
 
 const QUALITY_BITRATES = { low: 32000, standard: 96000, high: 192000 };
-const WEB_SPEECH_LABEL = 'Web Speech API (online, not private)';
 
 let audioEngine = null;
 let timerHandle = null;
@@ -162,9 +161,8 @@ async function startRecording() {
 
   // Detect which engine will actually run *before* deciding how to capture
   // audio at all — this determines whether transcript-only mode applies.
-  const detectedEngineLabel = await transcriptionManager.detectAvailableEngine();
-  const willUseWebSpeech = detectedEngineLabel === WEB_SPEECH_LABEL;
-  transcriptOnlyMode = willUseWebSpeech && mode === 'microphone';
+  const detectedEngine = await transcriptionManager.detectAvailableEngine();
+  transcriptOnlyMode = Boolean(detectedEngine?.needsExclusiveMicrophone) && mode === 'microphone';
 
   try {
     if (transcriptOnlyMode) {
@@ -381,7 +379,7 @@ function updateToolbarForStatus(status) {
 
 function updateEngineBanners(engineLabel) {
   const e = els();
-  e.webSpeechBanner.classList.toggle('hidden', !transcriptionManager.isWebSpeech);
+  e.webSpeechBanner.classList.toggle('hidden', !transcriptionManager.activeProviderRequiresPrivacyDisclosure);
   e.noEngineBanner.classList.toggle('hidden', Boolean(engineLabel));
 }
 

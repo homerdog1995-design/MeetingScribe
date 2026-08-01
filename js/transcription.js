@@ -28,16 +28,29 @@ class TranscriptionManager extends EventTarget {
     return this._activeLabel;
   }
 
-  get isWebSpeech() {
-    return this._activeProvider instanceof WebSpeechProvider;
+  /** Whether whatever engine is currently active needs sole microphone access — see providerBase.js. Never checks engine names directly. */
+  get activeProviderNeedsExclusiveMicrophone() {
+    return Boolean(this._activeProvider?.needsExclusiveMicrophone);
   }
 
-  /** Probes providers in priority order and returns the label of whichever would activate, without starting it. */
+  /** Whether whatever engine is currently active only reports approximate ("now") timestamps — see providerBase.js. Never checks engine names directly. */
+  get activeProviderHasApproximateTimestamps() {
+    return Boolean(this._activeProvider?.hasApproximateTimestamps);
+  }
+
+  /** Whether whatever engine is currently active sends data outside this device and needs the persistent privacy banner — see providerBase.js. Never checks engine names directly. */
+  get activeProviderRequiresPrivacyDisclosure() {
+    return Boolean(this._activeProvider?.requiresPrivacyDisclosure);
+  }
+
+  /** Probes providers in priority order and returns info about whichever would activate, without starting it. */
   async detectAvailableEngine() {
     for (const ProviderClass of PROVIDER_CHAIN) {
       const provider = new ProviderClass();
       try {
-        if (await provider.isAvailable()) return provider.label;
+        if (await provider.isAvailable()) {
+          return { label: provider.label, needsExclusiveMicrophone: provider.needsExclusiveMicrophone };
+        }
       } catch {
         // Detection failures are treated as "not available"; keep probing the chain.
       }

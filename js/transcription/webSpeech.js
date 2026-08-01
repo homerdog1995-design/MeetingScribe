@@ -35,6 +35,15 @@ export class WebSpeechProvider extends TranscriptionProvider {
 
   get label() { return 'Web Speech API (online, not private)'; }
 
+  /** Confirmed via real device testing: this engine's own independent microphone session can't reliably share the mic with this app's own audio capture (see recording.js's transcript-only mode). */
+  get needsExclusiveMicrophone() { return true; }
+
+  /** This engine only ever reports "now" as both a segment's start and end — it has no real acoustic timing the way Sherpa ASR's endpoint detection does. */
+  get hasApproximateTimestamps() { return true; }
+
+  /** Sends microphone audio to Google's servers — the one deliberate, disclosed exception to this app's otherwise fully-offline design. */
+  get requiresPrivacyDisclosure() { return true; }
+
   async isAvailable() {
     if (!SpeechRecognitionImpl) return false;
     const settings = await settingsStore.get();

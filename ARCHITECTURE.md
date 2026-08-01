@@ -83,11 +83,10 @@ without a proper index.
 
 ## 4. The transcription provider pattern
 
-Unchanged in spirit: every engine implements the same interface
-(`js/transcription/providerBase.js` — `isAvailable()`, `start()`,
-`submitAudioChunk()`, `stop()`, plus `segment`/`error` events), and
-`transcription.js` probes them in priority order so the UI never needs to
-know which one is active.
+Every engine implements the same interface (`js/transcription/
+providerBase.js` — `isAvailable()`, `start()`, `submitAudioChunk()`,
+`stop()`, plus `segment`/`error` events), and `transcription.js` probes
+them in priority order so the UI never needs to know which one is active.
 
 **What changed:** the provider chain used to be
 `[whisper.cpp, faster-whisper, Whisper WASM, Web Speech API]`. The first two
@@ -109,19 +108,61 @@ with that specific compiled binary. The chain is now:
 via a vendored build of [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)
 (Apache-2.0, `assets/speech-recognition/`) — the same toolkit as the
 speaker-diarization feature (§12), already proven to run successfully in
-real device testing before this integration was attempted. Unlike the old
-Whisper WASM integration (which processed discrete, pre-chunked WAV
-buffers), this engine is fed a **continuous stream of small raw audio
-frames** (see audio.js's `pcm-frame` event) and has **real, built-in
-endpoint detection** — an acoustic signal for "this utterance just
-ended," not a guess from silence gaps. That's what actually fixes
-repeated/stacked words in the live transcript: text is only ever
-committed once the engine itself confirms an utterance boundary. No setup
-is needed — the engine and model are committed directly into this repo
-(split into <100MB parts and reassembled via same-origin `fetch()` at load
-time, since the ~191MB model exceeds GitHub's per-file push limit and its
-release-asset host doesn't send CORS headers — see `sherpaAsrWorker.js`'s
-file header). It's on by default; Settings → AI Engines can turn it off.
+real device testing before this integration was attempted. This is now the
+committed, primary engine (no other engine is being evaluated to replace
+it) — remaining effort goes into improving its pipeline, not searching for
+alternatives. Unlike the old Whisper WASM integration (which processed
+discrete, pre-chunked WAV buffers), this engine is fed a **continuous
+stream of small raw audio frames** (see audio.js's `pcm-frame` event) and
+has **real, built-in endpoint detection** — an acoustic signal for "this
+utterance just ended," not a guess from silence gaps. That's what
+actually fixes repeated/stacked words in the live transcript: text is
+only ever committed once the engine itself confirms an utterance
+boundary. No setup is needed — the engine and model are committed
+directly into this repo (split into <100MB parts and reassembled via
+same-origin `fetch()` at load time, since the ~191MB model exceeds
+GitHub's per-file push limit and its release-asset host doesn't send CORS
+headers — see `sherpaAsrWorker.js`'s file header). It's on by default;
+Settings → AI Engines can turn it off, and it disables itself
+automatically after repeated failures.
+
+**Decoding is tuned, not left at defaults** (`sherpaAsrWorker.js`):
+`modified_beam_search` (maxActivePaths: 8) instead of the library's
+default `greedy_search`, trading a bit of speed for meaningfully better
+accuracy — affordable here since this already runs single-threaded (see
+below) on a small, fast model. Endpoint silence thresholds are named
+constants at the top of the file specifically so they're easy to find and
+adjust later, rather than being magic numbers buried in a config object.
+Raw model output is ALL CAPS (this checkpoint was trained on
+casing-stripped text — a deliberate, common choice for this class of ASR
+training, not a bug) — `normalizeCasing()` in `sherpaAsr.js` restores
+sentence-start capitals and standalone "I" as a post-processing pass,
+since the model itself never learned casing at all.
+
+**Audio preprocessing** (`audio.js`): frames are resampled to 16kHz mono
+(explicit `channelInterpretation: 'speakers'`, not relying on implicit
+browser defaults, so a stereo/multi-channel source properly downmixes
+rather than silently losing a channel) and then gain-normalized
+(RMS-based, capped boost) before reaching the engine, so quiet speech
+gets pulled toward the loudness these models are generally trained on
+without amplifying near-silence into audible noise.
+
+**Why this is genuinely continuous streaming, not chunk-and-reconcile**:
+an earlier design (used for the removed Whisper WASM integration) sliced
+audio into discrete, silence-delimited buffers and decoded each one in
+isolation — a design where words really can get lost or duplicated at
+chunk boundaries, which is what overlapping-window reconciliation exists
+to paper over. This app doesn't chunk audio at the application level at
+all anymore: `audio.js` streams small frames continuously into one
+persistent recognizer stream, and the engine's own endpoint detection (not
+any boundary this app imposes) decides where one utterance ends and the
+next begins. There's no boundary to reconcile in the first place. The
+practical equivalent of "dropped audio" in this design isn't a chunk edge
+— it's the processing queue falling behind real-time arrival on a slower
+device (nothing is ever silently dropped; every frame is queued and
+processed in order, but latency could grow). `sherpaAsr.js` logs a
+warning if the queue depth crosses a threshold, so that's diagnosable
+rather than invisible.
 
 Web Speech API remains the last-resort, explicitly-disclosed, non-offline
 fallback (see §9) — and, per real device testing, has a genuine
@@ -130,14 +171,40 @@ with this app's own recording pipeline (see §9's transcript-only mode
 note), whereas Sherpa ASR never has that problem, since it processes
 audio through the same stream this app already captures.
 
-## 5. Speaker identification
+**Swapping in a different engine later requires no UI or storage
+changes.** Every engine-specific limitation is a property the provider
+declares about itself — `needsExclusiveMicrophone`, `hasApproximateTimestamps`,
+`requiresPrivacyDisclosure` (all on `providerBase.js`, all defaulting to
+`false`) — rather than other modules checking engine names or labels
+directly. `recording.js` decides whether a recording needs transcript-only
+mode by reading `needsExclusiveMicrophone` off whichever engine
+`detectAvailableEngine()` returns, never by string-matching a label.
+`editor.js` widens its speaker-turn heuristic by reading
+`hasApproximateTimestamps`, the same way. A new engine that implements
+`providerBase.js`'s interface and is added to `PROVIDER_CHAIN` in
+`transcription.js` just works — nothing elsewhere needs to know it exists.
 
-Unchanged: no real acoustic diarization (no voice embedding/clustering).
-Speakers are auto-created in a round-robin pool (capped at 4) whenever a
-turn is detected, using an engine-provided `speakerTurn` flag if available
-or a silence-gap heuristic otherwise (`editor.js`'s `handleLiveSegment`).
-Manual reassignment, renaming, recoloring, and speaking-time stats are all
-unchanged from the desktop version.
+## 5. Speaker identification — two genuinely independent layers
+
+`js/transcriptAssembly.js` is where both live: **`LiveSpeakerRotation`**
+(a same-engine-agnostic heuristic — auto-creates up to 2 speakers, then
+cycles between them on a silence gap or an engine-provided `speakerTurn`
+flag, applied as text arrives during recording) and **`applyDiarization`**
+(real acoustic speaker identity from §12's diarization engine, applied as
+a separate, later pass over an already-finished recording's saved audio).
+
+These two never call each other or share state — that's deliberate, not
+incidental. The live heuristic has no way to know how many people are
+actually in a meeting (no ASR engine here reports real speaker identity),
+so it's necessarily a rough placeholder; diarization is the real answer,
+and it can only run once the whole recording exists to cluster voices
+across. Keeping them as separate functions in one module (rather than
+diarization results somehow feeding back into or overriding live state
+mid-recording) means each can change independently — a smarter live
+heuristic wouldn't need to know anything about how diarization
+reconciles its results, and vice versa. `editor.js` and `speakers.js` are
+thin UI callers: they hold no assembly logic themselves, just call into
+this module and handle rendering/refresh with what comes back.
 
 ## 6. Summarization
 
@@ -239,9 +306,11 @@ too: the standard `SpeechRecognition` API has no way to accept a custom
 
 The module boundaries are unchanged from the desktop version and still the
 right place to hang new functionality: a new transcription engine
-implements `providerBase.js`'s interface and gets added to
-`transcription.js`'s `PROVIDER_CHAIN`; a new export format gets a file
-under `js/exporters/` and an entry in `exportEngine.js`'s `FORMATS`/
+implements `providerBase.js`'s interface (including its capability flags —
+`needsExclusiveMicrophone`, `hasApproximateTimestamps`,
+`requiresPrivacyDisclosure` — for any real limitation it has) and gets
+added to `transcription.js`'s `PROVIDER_CHAIN`; a new export format gets a
+file under `js/exporters/` and an entry in `exportEngine.js`'s `FORMATS`/
 `BUILDERS`; a new settings field goes in `settingsStore.js`'s
 `DEFAULT_SETTINGS` plus a UI control wired in `settings.js`.
 
@@ -252,11 +321,14 @@ independent WebAssembly engine — a vendored build of
 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (Apache-2.0), which
 bundles a pyannote speech-segmentation model and a speaker-embedding
 network directly in its `.data` package (`assets/speaker-diarization/`,
-~56MB). It has nothing to do with Whisper WASM or Web Speech; it doesn't
-transcribe anything. It only answers "who was probably talking, and when,"
-by extracting a voice-characteristic embedding for each detected speech
-segment and clustering those embeddings — the same category of technique
-real diarization products use, running entirely on-device.
+~56MB). It has nothing to do with the ASR engine (§4) — it doesn't
+transcribe anything, and results only ever get applied through
+`transcriptAssembly.js`'s `applyDiarization()` (§5), never coupled
+directly into live transcription. It only answers "who was probably
+talking, and when," by extracting a voice-characteristic embedding for
+each detected speech segment and clustering those embeddings — the same
+category of technique real diarization products use, running entirely
+on-device.
 
 **Why this is a batch, not a live, feature:** clustering needs embeddings
 from across the whole conversation to group speakers correctly — there's

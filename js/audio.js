@@ -48,21 +48,22 @@ export class AudioEngine extends EventTarget {
   }
 
   /** @param {'microphone'|'system'|'mixed'} mode */
-  async start(mode, { audioBitsPerSecond = 96000, minimalAudioConstraints = false } = {}) {
+  async start(mode, { audioBitsPerSecond = 96000 } = {}) {
     this.audioContext = new AudioContext();
     this.recorderChunkIndex = 0;
 
     if (mode === 'microphone' || mode === 'mixed') {
-      // echoCancellation/noiseSuppression/autoGainControl push Chrome to
-      // request Android's "communications" audio mode for this stream,
-      // which can claim the microphone exclusively — starving a
-      // concurrently-running Web Speech recognition session of any real
-      // audio (its session opens fine, but never actually hears anything).
-      // When Web Speech is the active engine, skip these constraints
-      // entirely; they don't benefit it anyway, since it never consumes
-      // this app's own audio pipeline.
+      // Sherpa ASR (this app's primary transcription engine) processes
+      // this same captured stream directly — it never needs its own,
+      // separate microphone session the way Web Speech does, so there's
+      // no reason to drop these constraints for its benefit. Web Speech's
+      // mic-conflict problem (see recording.js's transcript-only mode) is
+      // instead solved by never starting this AudioEngine at all when Web
+      // Speech ends up being the active engine, rather than by weakening
+      // these constraints — noise suppression and echo cancellation
+      // generally help ASR accuracy rather than hurt it.
       this.micStream = await navigator.mediaDevices.getUserMedia({
-        audio: minimalAudioConstraints ? true : { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
     }
 
@@ -213,6 +214,15 @@ export class AudioEngine extends EventTarget {
    */
   _startPcmStream(mixBus) {
     this._streamNode = this.audioContext.createScriptProcessor(STREAM_BUFFER_SIZE, 1, 1);
+    // Explicit rather than relying on the browser's implicit defaults:
+    // 'speakers' interpretation is what makes a stereo/multi-channel source
+    // properly *downmix* into this node's single channel (summing left+
+    // right correctly) rather than silently discarding every channel but
+    // the first.
+    this._streamNode.channelCount = 1;
+    this._streamNode.channelCountMode = 'explicit';
+    this._streamNode.channelInterpretation = 'speakers';
+
     const monoTap = this.audioContext.createGain();
     monoTap.gain.value = 1;
     mixBus.connect(monoTap);
@@ -229,7 +239,8 @@ export class AudioEngine extends EventTarget {
     this._streamNode.onaudioprocess = (event) => {
       const input = event.inputBuffer.getChannelData(0);
       const resampled = resampleLinear(input, this.audioContext.sampleRate, TARGET_SAMPLE_RATE);
-      this.dispatchEvent(new CustomEvent('pcm-frame', { detail: { samples: resampled } }));
+      const normalized = normalizeGain(resampled);
+      this.dispatchEvent(new CustomEvent('pcm-frame', { detail: { samples: normalized } }));
     };
   }
 
@@ -252,6 +263,22 @@ function rmsFromByteTimeDomain(byteData) {
     sumSquares += normalized * normalized;
   }
   return clamp(Math.sqrt(sumSquares / byteData.length) * 3.2, 0, 1); // *3.2 empirically maps typical speech RMS into a usable 0-1 meter range
+}
+
+const TARGET_RMS = 0.08; // a reasonable target loudness for typical speech, matching what these models are generally trained on
+const MAX_NORMALIZATION_GAIN = 6; // caps how much a very quiet frame can be boosted, so near-silence/noise floor doesn't get amplified into audible artifacts
+
+/** Boosts (or gently attenuates) a frame toward a consistent target loudness, based on its RMS energy. */
+function normalizeGain(samples) {
+  let sumSquares = 0;
+  for (let i = 0; i < samples.length; i++) sumSquares += samples[i] * samples[i];
+  const rms = Math.sqrt(sumSquares / samples.length);
+  if (rms < 1e-4) return samples; // effectively silent — nothing meaningful to normalize, and boosting here would just amplify the noise floor
+  const gain = Math.min(TARGET_RMS / rms, MAX_NORMALIZATION_GAIN);
+  if (Math.abs(gain - 1) < 0.05) return samples; // already close enough — skip the redundant pass
+  const output = new Float32Array(samples.length);
+  for (let i = 0; i < samples.length; i++) output[i] = clamp(samples[i] * gain, -1, 1);
+  return output;
 }
 
 /**

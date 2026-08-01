@@ -32,6 +32,41 @@ export class TranscriptionProvider extends EventTarget {
   }
 
   /**
+   * @returns {boolean} true if this engine needs sole, exclusive access to
+   * the microphone and can't share it with this app's own audio capture
+   * (confirmed true for Web Speech via real device testing — see its file
+   * header). Providers that process audio this app is already capturing
+   * (the normal case) leave this false. recording.js uses this to decide
+   * whether a recording needs to skip its own audio pipeline entirely
+   * (transcript-only mode) — it never checks which specific engine is
+   * active by name.
+   */
+  get needsExclusiveMicrophone() {
+    return false;
+  }
+
+  /**
+   * @returns {boolean} true if this engine can only report "now" as both
+   * a segment's start and end time, with no real acoustic timing (true for
+   * Web Speech, which has no concept of when speech actually started).
+   * editor.js uses this to widen its speaker-turn silence-gap heuristic,
+   * rather than checking which specific engine is active by name.
+   */
+  get hasApproximateTimestamps() {
+    return false;
+  }
+
+  /**
+   * @returns {boolean} true if this engine sends audio/data outside this
+   * device (Web Speech sends audio to Google's servers) and needs the
+   * persistent in-app privacy banner. Providers that run fully on-device
+   * (the normal case) leave this false.
+   */
+  get requiresPrivacyDisclosure() {
+    return false;
+  }
+
+  /**
    * Called once when transcription starts for a meeting.
    * @param {{ meetingId: string, language: string }} options
    */
@@ -40,10 +75,10 @@ export class TranscriptionProvider extends EventTarget {
   }
 
   /**
-   * Feeds one audio chunk (16kHz mono WAV ArrayBuffer, from js/audio.js's
-   * VAD chunker) to the engine. Providers that stream live (Web Speech API)
-   * may ignore this and rely on their own live recognition instead.
-   * @param {{ wavBuffer: ArrayBuffer, startMs: number, endMs: number }} chunk
+   * Feeds one unit of audio to the engine — the shape depends on the
+   * provider: a continuous small PCM frame for streaming engines (Sherpa
+   * ASR), or ignored entirely for engines that listen to the microphone
+   * independently (Web Speech).
    */
   async submitAudioChunk(chunk) {
     throw new Error('submitAudioChunk() must be implemented by provider');

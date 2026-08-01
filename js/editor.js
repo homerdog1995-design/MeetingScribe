@@ -3,6 +3,7 @@
 import { store } from './state.js';
 import { storage } from './storage.js';
 import { transcriptionManager } from './transcription.js';
+import { LiveSpeakerRotation } from './transcriptAssembly.js';
 import {
   qs, qsa, el, formatTimestamp, debounce, showToast, openModal, colorForSpeakerIndex,
 } from './utils.js';
@@ -166,113 +167,35 @@ async function redo() {
 // Live transcription -> persisted segments
 // ---------------------------------------------------------------------------
 
-// With no real acoustic signal to distinguish speakers (see the file header
-// note on the round-robin heuristic), always creating brand-new speakers
-// before ever cycling back meant a simple one- or two-person conversation
-// would get 4 different auto-created identities before Speaker 1 ever
-// reappeared. Capping at 2 means cycling starts immediately after the
-// second speaker exists — a much better default for the common case.
-// Manual reassignment in the Speakers tab still covers meetings with more
-// than two people.
-const MAX_AUTO_SPEAKERS = 2;
-let speakerRoundRobin = [];
-let currentSpeakerSlot = -1;
-let lastSegmentEndMs = null;
-
-let lastCommittedText = null;
-let lastCommittedAtPerfMs = 0;
-let lastCommittedSegmentId = null;
+let liveRotation = null;
 
 async function handleLiveSegment(meetingId, detail) {
-  const text = detail.text.trim();
-  if (!text) return;
+  if (!liveRotation) return;
 
-  const nowPerf = performance.now();
-  const withinRevisionWindow = lastCommittedText !== null && (nowPerf - lastCommittedAtPerfMs) < 1500;
-
-  // This is the actual mechanism behind the "echo": rather than one true
-  // final result per utterance, Chrome's continuous mode can mark a
-  // still-growing, in-progress transcription as isFinal repeatedly —
-  // "I said" -> "I said I" -> "I said I love" -> "I said I love you" are
-  // all revisions of the SAME utterance, not four new ones. Exact-repeat
-  // checking alone (the previous fix) never catches this, because the
-  // text is different each time. Detecting "the new text starts with the
-  // text we already committed" and REPLACING that segment in place
-  // (instead of inserting a new one) is what actually collapses this
-  // pattern down to one clean line.
-  if (withinRevisionWindow && text === lastCommittedText) {
-    return; // exact repeat — nothing to do
-  }
-  if (withinRevisionWindow && lastCommittedSegmentId && text.startsWith(lastCommittedText)) {
-    await storage.updateTranscriptSegment(meetingId, lastCommittedSegmentId, { text });
-    lastCommittedText = text;
-    lastCommittedAtPerfMs = nowPerf;
-    const refreshed = await storage.getMeeting(meetingId);
-    store.set('currentMeeting', refreshed);
-    dirtySinceLastSnapshot = true;
-    return;
-  }
-
+  // Some engines (Web Speech, confirmed via real device testing) only ever
+  // report "now" as both a segment's start and end, with no real acoustic
+  // timing — its delivery is also bursty, arriving in clumps after each
+  // internal session restart. A threshold tuned for genuine timestamps
+  // (Sherpa ASR's real endpoint detection) would misfire constantly for a
+  // single continuous speaker under those conditions, so this widens it
+  // for any engine that declares approximate timestamps — never checking
+  // engine names directly (see providerBase.js).
   const settings = store.get('settings');
-  // Web Speech only ever reports the instant a result arrived (both start
-  // and end are the same timestamp — it has no real acoustic boundaries
-  // the way Whisper does), and its delivery is bursty: results often
-  // arrive in clumps after each internal session restart (roughly every
-  // 5-7 seconds). The configured speaker-change threshold (default 700ms)
-  // is tuned for real timestamps and was almost certainly misfiring
-  // constantly for a single continuous speaker under Web Speech. Use a
-  // much longer, less trigger-happy threshold specifically for it.
-  const silenceThresholdMs = transcriptionManager.isWebSpeech
+  const silenceThresholdMs = transcriptionManager.activeProviderHasApproximateTimestamps
     ? 3500
     : (settings?.transcriptionPreferences?.speakerChangeSilenceMs ?? 700);
-  const isTurn = detail.speakerTurn || lastSegmentEndMs === null || (detail.startMs - lastSegmentEndMs >= silenceThresholdMs);
 
-  if (isTurn) await advanceSpeakerSlot(meetingId);
-  lastSegmentEndMs = detail.endMs;
-
-  const speakerId = speakerRoundRobin[currentSpeakerSlot] || null;
-
-  const inserted = await storage.addTranscriptSegments(meetingId, [{
-    speakerId,
-    startMs: Math.round(detail.startMs),
-    endMs: Math.round(detail.endMs),
-    text,
-    confidence: detail.confidence,
-    paragraphBreak: isTurn,
-  }]);
-
-  lastCommittedText = text;
-  lastCommittedAtPerfMs = nowPerf;
-  lastCommittedSegmentId = inserted[0]?.id ?? null;
+  const result = await liveRotation.assignLiveSegment(meetingId, detail, silenceThresholdMs);
+  if (!result.inserted && !result.updated) return;
 
   const refreshed = await storage.getMeeting(meetingId);
   store.set('currentMeeting', refreshed);
   dirtySinceLastSnapshot = true;
-  scrollTranscriptToBottom();
-}
-
-async function advanceSpeakerSlot(meetingId) {
-  if (speakerRoundRobin.length < MAX_AUTO_SPEAKERS) {
-    const index = speakerRoundRobin.length;
-    const speaker = await storage.upsertSpeaker(meetingId, {
-      label: `Speaker ${index + 1}`,
-      display_name: null,
-      color: colorForSpeakerIndex(index),
-    });
-    speakerRoundRobin.push(speaker.id);
-    currentSpeakerSlot = index;
-  } else {
-    currentSpeakerSlot = (currentSpeakerSlot + 1) % speakerRoundRobin.length;
-  }
+  if (result.inserted) scrollTranscriptToBottom();
 }
 
 function resetSpeakerRotation(meeting) {
-  lastCommittedText = null;
-  lastCommittedAtPerfMs = 0;
-  lastCommittedSegmentId = null;
-  speakerRoundRobin = meeting.speakers.slice().sort((a, b) => a.sort_index - b.sort_index).map((s) => s.id);
-  currentSpeakerSlot = speakerRoundRobin.length - 1;
-  lastSegmentEndMs = meeting.segments.length ? meeting.segments[meeting.segments.length - 1].end_ms : null;
+  liveRotation = new LiveSpeakerRotation(meeting);
 }
 
 function scrollTranscriptToBottom() {

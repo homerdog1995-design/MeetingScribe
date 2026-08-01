@@ -3,8 +3,9 @@
 import { store } from './state.js';
 import { storage } from './storage.js';
 import { isAvailable as isDiarizationAvailable, diarizeRecording } from './diarization.js';
+import { applyDiarization } from './transcriptAssembly.js';
 import {
-  qs, el, formatTimestamp, debounce, showToast, colorForSpeakerIndex,
+  qs, el, formatTimestamp, debounce, showToast,
 } from './utils.js';
 
 export function initSpeakers() {
@@ -128,11 +129,10 @@ async function runDiarization() {
     }
 
     status.textContent = 'Applying results…';
-    await applyDiarizationResult(meeting, turns);
+    const { speakerCount } = await applyDiarization(meeting, turns);
 
     const refreshed = await storage.getMeeting(meeting.id);
     store.set('currentMeeting', refreshed);
-    const speakerCount = new Set(turns.map((t) => t.speaker)).size;
     status.textContent = '';
     showToast(`Detected ${speakerCount} speaker${speakerCount === 1 ? '' : 's'} and reassigned the transcript.`, 'success');
   } catch (error) {
@@ -149,57 +149,3 @@ async function runDiarization() {
  * and removes any speakers left with no segments (typically the old
  * heuristic round-robin speakers this replaces).
  */
-async function applyDiarizationResult(meeting, turns) {
-  const clusterIds = [...new Set(turns.map((t) => t.speaker))].sort((a, b) => a - b);
-  const newSpeakerIdByCluster = new Map();
-  for (const [index, clusterId] of clusterIds.entries()) {
-    const speaker = await storage.upsertSpeaker(meeting.id, {
-      label: `Speaker ${index + 1}`,
-      display_name: null,
-      color: colorForSpeakerIndex(index),
-    });
-    newSpeakerIdByCluster.set(clusterId, speaker.id);
-  }
-
-  for (const segment of meeting.segments) {
-    const bestTurn = findBestOverlap(segment, turns);
-    const newSpeakerId = bestTurn ? newSpeakerIdByCluster.get(bestTurn.speaker) : null;
-    if (newSpeakerId && newSpeakerId !== segment.speaker_id) {
-      await storage.updateTranscriptSegment(meeting.id, segment.id, { speaker_id: newSpeakerId });
-    }
-  }
-
-  const oldSpeakerIds = new Set(meeting.speakers.map((s) => s.id));
-  const keptSpeakerIds = new Set(newSpeakerIdByCluster.values());
-  const staleSpeakerIds = [...oldSpeakerIds].filter((id) => !keptSpeakerIds.has(id));
-  for (const speakerId of staleSpeakerIds) {
-    await storage.deleteSpeakerIfUnused(meeting.id, speakerId);
-  }
-}
-
-function findBestOverlap(segment, turns) {
-  let best = null;
-  let bestOverlapMs = 0;
-  for (const turn of turns) {
-    const overlapStart = Math.max(segment.start_ms, turn.startMs);
-    const overlapEnd = Math.min(segment.end_ms, turn.endMs);
-    const overlapMs = Math.max(0, overlapEnd - overlapStart);
-    if (overlapMs > bestOverlapMs) {
-      bestOverlapMs = overlapMs;
-      best = turn;
-    }
-  }
-  if (!best) {
-    // Segment fell entirely in a gap between turns (e.g. a very short
-    // utterance) — fall back to whichever turn is temporally closest.
-    let minDistance = Infinity;
-    for (const turn of turns) {
-      const distance = segment.start_ms < turn.startMs ? turn.startMs - segment.start_ms : segment.start_ms - turn.endMs;
-      if (Math.abs(distance) < minDistance) {
-        minDistance = Math.abs(distance);
-        best = turn;
-      }
-    }
-  }
-  return best;
-}

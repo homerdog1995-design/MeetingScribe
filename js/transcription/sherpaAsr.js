@@ -29,6 +29,7 @@ export class SherpaAsrProvider extends TranscriptionProvider {
     this._streamElapsedMs = 0; // total audio fed so far, i.e. this session's absolute timeline
     this._queue = Promise.resolve();
     this._consecutiveFailures = 0;
+    this._pendingFrameCount = 0;
   }
 
   get label() { return 'Sherpa-ONNX ASR (on-device)'; }
@@ -64,13 +65,28 @@ export class SherpaAsrProvider extends TranscriptionProvider {
     await this._call('load', {});
   }
 
-  /** @param {{samples: Float32Array}} detail - a small continuous frame of 16kHz mono audio, not a pre-chunked utterance */
+  /**
+   * @param {{samples: Float32Array}} detail - a small continuous frame of
+   * 16kHz mono audio, not a pre-chunked utterance. Queued rather than
+   * processed immediately: every frame is guaranteed to be processed, in
+   * order, none dropped — the actual risk in a continuous-streaming
+   * design isn't a chunk-boundary word loss (there are no chunk
+   * boundaries), it's the queue quietly growing if single-threaded
+   * processing can't keep up with real-time audio arrival on a slower
+   * device. That's monitored below rather than left invisible.
+   */
   async submitAudioChunk({ samples }) {
+    this._pendingFrameCount += 1;
     this._queue = this._queue.then(() => this._processFrame(samples));
     return this._queue;
   }
 
   async _processFrame(samples) {
+    this._pendingFrameCount -= 1;
+    const QUEUE_DEPTH_WARNING_THRESHOLD = 10; // ~1-2s of backlog at typical frame sizes — worth knowing about, not yet a hard problem
+    if (this._pendingFrameCount >= QUEUE_DEPTH_WARNING_THRESHOLD && this._pendingFrameCount % 10 === 0) {
+      logger.warn('sherpaAsr', 'Processing is falling behind real-time audio — the live transcript may lag noticeably', { pendingFrames: this._pendingFrameCount });
+    }
     if (!this._worker) return;
     const frameDurationMs = (samples.length / 16000) * 1000;
     const frameStartMs = this._streamElapsedMs;

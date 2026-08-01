@@ -77,7 +77,8 @@ export class SherpaAsrProvider extends TranscriptionProvider {
     this._streamElapsedMs += frameDurationMs;
 
     try {
-      const { text, isEndpoint } = await this._call('feed', { samples }, [samples.buffer]);
+      const { text: rawText, isEndpoint } = await this._call('feed', { samples }, [samples.buffer]);
+      const text = normalizeCasing(rawText);
       this._consecutiveFailures = 0;
       if (isEndpoint && text) {
         this.dispatchEvent(new CustomEvent('segment', {
@@ -150,4 +151,22 @@ export class SherpaAsrProvider extends TranscriptionProvider {
     else if (data.type === 'result') pending.resolve({ text: data.text, isEndpoint: data.isEndpoint });
     else if (data.type === 'ok') pending.resolve();
   }
+}
+
+/**
+ * This streaming checkpoint was trained on text with casing stripped
+ * during preprocessing (a common choice for CTC/transducer ASR training,
+ * since raw acoustic modeling doesn't need it) — it never learned casing
+ * at all, which is why its raw output is ALL CAPS. This is a
+ * post-processing fix, not something tunable in the model itself:
+ * lowercase everything, then restore the casing conventions a reader
+ * actually expects.
+ */
+function normalizeCasing(rawText) {
+  if (!rawText) return rawText;
+  let text = rawText.toLowerCase();
+  text = text.charAt(0).toUpperCase() + text.slice(1);
+  text = text.replace(/([.!?]\s+)([a-z])/g, (_, sep, letter) => sep + letter.toUpperCase());
+  text = text.replace(/\bi\b/g, 'I');
+  return text;
 }

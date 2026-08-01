@@ -188,7 +188,7 @@ async function handleLiveSegment(meetingId, detail) {
   if (!text) return;
 
   const nowPerf = performance.now();
-  const withinRevisionWindow = lastCommittedText !== null && (nowPerf - lastCommittedAtPerfMs) < 8000;
+  const withinRevisionWindow = lastCommittedText !== null && (nowPerf - lastCommittedAtPerfMs) < 1500;
 
   // This is the actual mechanism behind the "echo": rather than one true
   // final result per utterance, Chrome's continuous mode can mark a

@@ -63,6 +63,7 @@ export class WebSpeechProvider extends TranscriptionProvider {
     // starts its own fresh results array.
     this._lastProcessedResultIndex = -1;
     this._lastCommittedFinalText = null;
+    this._lastCommittedFinalAtPerfMs = null;
 
     const recognition = new SpeechRecognitionImpl();
     recognition.continuous = true;
@@ -97,12 +98,21 @@ export class WebSpeechProvider extends TranscriptionProvider {
         // final, a later one can occasionally be a growing revision of the
         // text just committed (editor.js also guards against this
         // downstream, but catching it here means it never leaves this
-        // provider as a duplicate in the first place).
-        if (this._lastCommittedFinalText && text.startsWith(this._lastCommittedFinalText)) {
+        // provider as a duplicate in the first place). Tightly time-boxed:
+        // the actual growing-revision pattern this exists for happens
+        // within about a second, so a wide window risks misreading two
+        // different, sequential sentences that happen to share a common
+        // starting word ("I", "so", "the") as one being a revision of the
+        // other — which silently drops everything after the shared word.
+        const nowPerf = performance.now();
+        const withinRevisionWindow = this._lastCommittedFinalAtPerfMs !== null && (nowPerf - this._lastCommittedFinalAtPerfMs) < 1500;
+        if (withinRevisionWindow && this._lastCommittedFinalText && text.startsWith(this._lastCommittedFinalText)) {
           this._lastCommittedFinalText = text;
+          this._lastCommittedFinalAtPerfMs = nowPerf;
           continue;
         }
         this._lastCommittedFinalText = text;
+        this._lastCommittedFinalAtPerfMs = nowPerf;
         logger.info('webSpeech', 'Final result committed as a segment', { text });
         const nowMs = performance.now() - this._sessionStartPerfMs;
         this.dispatchEvent(new CustomEvent('segment', {

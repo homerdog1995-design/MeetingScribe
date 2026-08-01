@@ -33,8 +33,34 @@ export function initPlayback() {
   audio.addEventListener('ended', () => { toggleButton.textContent = '▶'; });
 
   audio.addEventListener('loadedmetadata', () => {
-    currentDurationMs = (audio.duration || 0) * 1000;
-    updateTimeLabel(audio.currentTime * 1000);
+    // audio.duration is unreliable here: MediaRecorder-produced WebM Blobs
+    // have no proper duration header (they're recorded live, without
+    // knowing the final length ahead of time), so Chrome reports Infinity
+    // until something forces a recalculation. The meeting's own duration_ms
+    // (tracked accurately via the recording timer, independent of the audio
+    // container's metadata) is the authoritative source instead.
+    const meeting = store.get('currentMeeting');
+    if (meeting?.duration_ms) {
+      currentDurationMs = meeting.duration_ms;
+      updateTimeLabel(audio.currentTime * 1000);
+    } else if (Number.isFinite(audio.duration)) {
+      currentDurationMs = audio.duration * 1000;
+      updateTimeLabel(audio.currentTime * 1000);
+    } else {
+      // No stored duration to fall back on — force Chrome to recompute a
+      // real value by seeking near the end, then back to the start. This
+      // is the standard workaround for this exact MediaRecorder/Blob quirk.
+      const forceDurationRecalc = () => {
+        if (Number.isFinite(audio.duration)) {
+          currentDurationMs = audio.duration * 1000;
+          audio.currentTime = 0;
+          audio.removeEventListener('timeupdate', forceDurationRecalc);
+          updateTimeLabel(0);
+        }
+      };
+      audio.addEventListener('timeupdate', forceDurationRecalc);
+      audio.currentTime = 1e7;
+    }
   });
   audio.addEventListener('timeupdate', () => {
     updateTimeLabel(audio.currentTime * 1000);
